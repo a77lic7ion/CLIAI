@@ -67,7 +67,7 @@ class AIProvider:
         except Exception as e:
             messagebox.showerror("AI Initialization Error", f"Failed to initialize {self.provider}: {e}")
 
-    def get_commands(self, user_request, manufacturer, model, version, use_web_search=False, ollama_model='llama3'):
+    def get_commands(self, user_request, manufacturer, model, version, use_web_search=False, ollama_model='llama3', gemini_model=None):
         if self.provider == "None": return ["# AI not configured."]
         if self.provider == "Simulation": return self.run_simulation(user_request)
 
@@ -108,48 +108,68 @@ class AIProvider:
         """
         try:
             if self.provider == "Gemini":
-                if not genai: return ["# Gemini library not installed."]
+                # Use Gemini API via OpenAI-compatible endpoint (chat.completions)
+                # Respect explicit selection, fallback to preference order
+                model_preferences = [
+                    "gemini-1.5-flash",
+                    "gemini-2.0-flash",
+                    "gemini-1.5-pro"
+                ]
+                if gemini_model:
+                    if not gemini_model.startswith("gemini-"):
+                        gemini_model = f"gemini-{gemini_model}"
+                    model_preferences = [gemini_model] + [m for m in model_preferences if m != gemini_model]
 
-                # Detect available models and pick one that supports generateContent
-                selected_model = None
-                try:
-                    available = list(genai.list_models())
-                    supported = [m for m in available if hasattr(m, 'supported_generation_methods') and 'generateContent' in m.supported_generation_methods]
-                    # Preference order of common Gemini models
-                    preferences = [
-                        'gemini-1.5-flash', 'gemini-1.5-flash-001',
-                        'gemini-1.5-pro', 'gemini-1.5-pro-001',
-                        'gemini-1.0-pro', 'gemini-1.0-pro-001'
-                    ]
-                    for pref in preferences:
-                        match = next((m for m in supported if m.name.endswith(pref) or m.name.split('/')[-1] == pref), None)
-                        if match:
-                            selected_model = match.name
-                            break
-                    if not selected_model and supported:
-                        selected_model = supported[0].name
-                except Exception:
-                    # Fallback to a widely available default if listing fails
-                    selected_model = 'gemini-1.5-pro'
-
-                tools = [genai.Tool.from_google_search_retrieval(google_search=genai.GoogleSearch())] if use_web_search else None
-                safety_settings = {
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                }
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_request},
+                ]
 
                 try:
-                    gemini_model = genai.GenerativeModel(selected_model, tools=tools, safety_settings=safety_settings)
-                    response = gemini_model.generate_content(f"{system_prompt}\nUser Request: {user_request}")
-                    text = getattr(response, 'text', None)
-                    if not text:
-                        # Some SDK versions return candidates/parts
-                        text = str(response)
-                    return [line for line in text.strip().split('\n')]
+                    if OpenAI:
+                        client = OpenAI(
+                            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                            api_key=self.api_key,
+                        )
+                        # Try models by preference order
+                        last_err = None
+                        for m in model_preferences:
+                            try:
+                                completion = client.chat.completions.create(
+                                    model=m,
+                                    messages=messages,
+                                )
+                                content = None
+                                try:
+                                    content = completion.choices[0].message.content
+                                except Exception:
+                                    content = completion.choices[0].get("message", {}).get("content", "")
+                                return [line for line in (content or "").strip().split("\n") if line]
+                            except Exception as err:
+                                last_err = err
+                                continue
+                        raise last_err if last_err else Exception("Gemini OpenAI-compatible call failed")
+                    else:
+                        # Fallback to direct REST call
+                        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                        last_err_text = None
+                        for m in model_preferences:
+                            payload = {"model": m, "messages": messages}
+                            try:
+                                resp = requests.post(f"{url}?key={self.api_key}", json=payload, timeout=30)
+                                data = resp.json()
+                                if resp.status_code == 200 and "choices" in data:
+                                    content = data["choices"][0]["message"]["content"]
+                                    return [line for line in content.strip().split("\n")]
+                                else:
+                                    last_err_text = data.get("error", {}).get("message", f"HTTP {resp.status_code}")
+                                    continue
+                            except Exception as err:
+                                last_err_text = str(err)
+                                continue
+                        return ["# AI Error: Gemini request failed.", f"# {last_err_text}"]
                 except Exception as e:
-                    return ["# AI Error: Gemini request failed.", f"# {str(e)}", f"# Model tried: {selected_model}"]
+                    return ["# AI Error: Gemini request failed.", f"# {str(e)}"]
 
             elif self.provider == "OpenAI":
                 if not OpenAI: return ["# OpenAI library not installed."]
@@ -309,8 +329,15 @@ class NetApp(tk.Tk):
         tk.Label(ai_config_frame, text="Ollama Model:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
         self.ollama_model_combo = ttk.Combobox(ai_config_frame, state="readonly")
         self.ollama_model_combo.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+        tk.Label(ai_config_frame, text="Gemini Model:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        self.gemini_model_combo = ttk.Combobox(ai_config_frame, state="readonly", values=["1.5-flash", "2.0-flash", "1.5-pro"])
+        self.gemini_model_combo.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        self.gemini_model_combo.set("1.5-flash")
+        # Buttons: Set provider and Check API Key
         self.set_ai_btn = tk.Button(ai_config_frame, text="Set AI Provider", command=self.set_ai_provider)
-        self.set_ai_btn.grid(row=3, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+        self.set_ai_btn.grid(row=4, column=0, padx=5, pady=5, sticky="ew")
+        self.check_api_btn = tk.Button(ai_config_frame, text="Check API Key", command=self.check_api_key)
+        self.check_api_btn.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
 
         ai_assistant_frame = tk.LabelFrame(ai_pane, text="AI Assistant", relief=tk.GROOVE)
         ai_pane.add(ai_assistant_frame)
@@ -361,6 +388,11 @@ class NetApp(tk.Tk):
         provider = self.ai_provider_combo.get()
         self.api_key_entry.config(state=tk.NORMAL if provider in ["Gemini", "OpenAI", "Mistral", "Claude"] else tk.DISABLED)
         self.web_search_check.config(state=tk.NORMAL if provider == "Gemini" else tk.DISABLED)
+        # Enable Gemini model selection only for Gemini provider
+        try:
+            self.gemini_model_combo.config(state="readonly" if provider == "Gemini" else tk.DISABLED)
+        except Exception:
+            pass
         
         if provider == "Ollama":
             self.ollama_model_combo.config(state="readonly")
@@ -415,6 +447,45 @@ class NetApp(tk.Tk):
                 self.com_port_combo.set(available_ports[0])
         except Exception as e:
             messagebox.showerror("Error", f"Failed to refresh COM ports: {str(e)}")
+
+    def get_selected_gemini_model_full(self):
+        sel = getattr(self, 'gemini_model_combo', None)
+        if not sel:
+            return None
+        val = self.gemini_model_combo.get().strip()
+        if not val:
+            return None
+        return val if val.startswith("gemini-") else f"gemini-{val}"
+
+    def check_api_key(self):
+        provider = self.ai_provider_combo.get()
+        api_key = self.api_key_entry.get().strip()
+        if not api_key:
+            messagebox.showerror("Error", "API Key is required to check.")
+            return
+        if provider == "Gemini":
+            model = self.get_selected_gemini_model_full() or "gemini-1.5-flash"
+            messages = [{"role": "user", "content": "ping"}]
+            try:
+                if OpenAI:
+                    client = OpenAI(base_url="https://generativelanguage.googleapis.com/v1beta/openai/", api_key=api_key)
+                    client.chat.completions.create(model=model, messages=messages)
+                    messagebox.showinfo("API Key", "Gemini API key is valid and reachable.")
+                else:
+                    url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+                    resp = requests.post(f"{url}?key={api_key}", json={"model": model, "messages": messages, "max_tokens": 1}, timeout=20)
+                    if resp.status_code == 200:
+                        messagebox.showinfo("API Key", "Gemini API key is valid and reachable.")
+                    elif resp.status_code == 429:
+                        messagebox.showinfo("API Key", "Gemini API key is valid, but quota is exhausted.")
+                    elif resp.status_code == 401:
+                        messagebox.showerror("API Key", "Unauthorized: API key invalid or not permitted.")
+                    else:
+                        messagebox.showerror("API Key", f"Error: HTTP {resp.status_code} - {resp.text}")
+            except Exception as e:
+                messagebox.showerror("API Key", f"Check failed: {e}")
+        else:
+            messagebox.showinfo("API Key", "Check is currently available for Gemini only.")
 
     def toggle_connection(self):
         if self.connection:
@@ -570,7 +641,8 @@ class NetApp(tk.Tk):
             self.model_entry.get(),
             self.ver_entry.get(),
             self.use_web_search_var.get(),
-            self.ollama_model_combo.get()
+            self.ollama_model_combo.get(),
+            self.get_selected_gemini_model_full()
         )
         
         self.ai_output.insert(tk.END, "AI Generated Commands:\n")

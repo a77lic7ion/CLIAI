@@ -265,6 +265,8 @@ class NetApp(tk.Tk):
         self.profiles = {}
         self.profiles_file = 'profiles.json'
         self.ai_provider = AIProvider()
+        # Session memory for auto-corrected commands per context
+        self.session_cmd_cache = {}
 
         # --- Main Content Frame ---
         main_frame = tk.Frame(self)
@@ -334,8 +336,9 @@ class NetApp(tk.Tk):
         ai_pane = tk.PanedWindow(main_frame, orient=tk.VERTICAL, sashrelief=tk.RAISED)
         main_pane.add(ai_pane)
 
+        # Top: AI Configuration (auto-expands entries)
         ai_config_frame = tk.LabelFrame(ai_pane, text="AI Configuration", relief=tk.GROOVE)
-        ai_pane.add(ai_config_frame, height=150)
+        ai_pane.add(ai_config_frame, minsize=140)
         tk.Label(ai_config_frame, text="Provider:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.ai_provider_combo = ttk.Combobox(ai_config_frame, state="readonly", values=["None", "Gemini", "OpenAI", "Mistral", "Claude", "Ollama", "Simulation"])
         self.ai_provider_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
@@ -356,6 +359,11 @@ class NetApp(tk.Tk):
         self.set_ai_btn.grid(row=4, column=0, padx=5, pady=5, sticky="ew")
         self.check_api_btn = tk.Button(ai_config_frame, text="Check API Key", command=self.check_api_key)
         self.check_api_btn.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
+        # Make the second column grow to fit
+        try:
+            ai_config_frame.columnconfigure(1, weight=1)
+        except Exception:
+            pass
         # Apply requested defaults and initialize provider
         try:
             self.api_key_entry.delete(0, tk.END)
@@ -364,8 +372,11 @@ class NetApp(tk.Tk):
         except Exception:
             pass
 
-        ai_assistant_frame = tk.LabelFrame(ai_pane, text="AI Assistant", relief=tk.GROOVE)
-        ai_pane.add(ai_assistant_frame)
+        # Bottom: Side-by-side split for AI Assistant and Chat
+        right_split = tk.PanedWindow(ai_pane, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        ai_pane.add(right_split)
+        ai_assistant_frame = tk.LabelFrame(right_split, text="AI Assistant", relief=tk.GROOVE)
+        right_split.add(ai_assistant_frame, minsize=300)
         context_frame = tk.Frame(ai_assistant_frame)
         context_frame.pack(pady=5, padx=10, fill='x')
         tk.Label(context_frame, text="Manufacturer:").grid(row=0, column=0, sticky="w")
@@ -395,6 +406,18 @@ class NetApp(tk.Tk):
         self.ai_output.pack(pady=10, padx=10, expand=True, fill="both")
         self.push_to_device_btn = tk.Button(ai_assistant_frame, text="Push to Connected Device", command=self.push_ai_commands, state=tk.DISABLED)
         self.push_to_device_btn.pack(pady=10, padx=10, fill="x")
+
+        # Chat pane: ask questions, get backend answers, and generate commands for changes
+        chat_frame = tk.LabelFrame(right_split, text="Chat", relief=tk.GROOVE)
+        right_split.add(chat_frame, minsize=300)
+        self.chat_log = scrolledtext.ScrolledText(chat_frame, wrap=tk.WORD, height=12, font=("Consolas", 10))
+        self.chat_log.pack(pady=6, padx=10, expand=True, fill="both")
+        chat_input_frame = tk.Frame(chat_frame)
+        chat_input_frame.pack(fill="x", padx=10, pady=6)
+        self.chat_input = tk.Entry(chat_input_frame, font=("Arial", 10))
+        self.chat_input.pack(side=tk.LEFT, fill="x", expand=True)
+        self.chat_input.bind("<Return>", self.chat_ask)
+        tk.Button(chat_input_frame, text="Send", command=self.chat_ask).pack(side=tk.LEFT, padx=6)
 
         # --- Status Bar ---
         self.status_var = tk.StringVar()
@@ -531,6 +554,130 @@ class NetApp(tk.Tk):
         except Exception:
             pass
 
+    def run_device_command(self, cmd, timeout=4):
+        """Send a command to the connected device and capture its response."""
+        if not self.connection or not getattr(self, 'is_connected', False):
+            raise RuntimeError("Not connected to any device.")
+        # Log and send
+        self.log_to_terminal(f"\n> {cmd}", "command")
+        try:
+            self.connection.write((cmd + '\r\n').encode())
+        except Exception as e:
+            raise RuntimeError(f"Send failed: {e}")
+        # Read response until timeout
+        response = ""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                if self.connection.in_waiting > 0:
+                    response += self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+            time.sleep(0.1)
+        if response:
+            self.log_to_terminal(response, "output")
+        else:
+            self.log_to_terminal("(no response)", "info")
+        return response
+
+    def _is_cli_error(self, output):
+        """Detect common CLI error responses across vendors."""
+        if not output:
+            return True
+        text = output.lower()
+        patterns = [
+            r"unrecognized command",
+            r"unknown command",
+            r"invalid input",
+            r"incomplete command",
+            r"too many parameters",
+            r"ambiguous command",
+            r"syntax error",
+            r"% ?error",
+            r"% ?invalid",
+        ]
+        try:
+            for p in patterns:
+                if re.search(p, text):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _execute_vlan_show_with_autocorrect(self, manufacturer):
+        """Run VLAN show command; if it fails, probe help and correct automatically. Returns (output, cmd_used)."""
+        m = (manufacturer or '').strip().lower()
+        cache_key = (m, 'vlan_show')
+        cached = self.session_cmd_cache.get(cache_key)
+        if cached:
+            out = self.run_device_command(cached, timeout=6)
+            if not self._is_cli_error(out):
+                return out, cached
+            # Cached failed; invalidate
+            self.session_cmd_cache.pop(cache_key, None)
+
+        base = self._get_vlan_show_command(m)
+        out = self.run_device_command(base, timeout=6)
+        if not self._is_cli_error(out):
+            self.session_cmd_cache[cache_key] = base
+            return out, base
+
+        # Autocorrect by vendor
+        try:
+            if m == 'h3c':
+                h1 = self.run_device_command('display ?', timeout=3)
+                cmd = 'display vlan'
+                if 'vlan' not in (h1 or '').lower():
+                    cmd = 'display vlan'  # still try standard
+                h2 = self.run_device_command('display vlan ?', timeout=3)
+                # Prefer minimal form unless options are required
+                cmd_try = cmd
+                out2 = self.run_device_command(cmd_try, timeout=6)
+                if self._is_cli_error(out2):
+                    # If 'all' appears as option, try it
+                    if 'all' in (h2 or '').lower():
+                        cmd_try = 'display vlan all'
+                        out2 = self.run_device_command(cmd_try, timeout=6)
+                if not self._is_cli_error(out2):
+                    self.session_cmd_cache[cache_key] = cmd_try
+                    return out2, cmd_try
+
+            elif m == 'cisco':
+                h1 = self.run_device_command('show ?', timeout=3)
+                cmd = 'show vlan'
+                if 'vlan' not in (h1 or '').lower():
+                    cmd = 'show vlan'
+                h2 = self.run_device_command('show vlan ?', timeout=3)
+                cmd_try = 'show vlan brief' if 'brief' in (h2 or '').lower() else cmd
+                out2 = self.run_device_command(cmd_try, timeout=6)
+                if self._is_cli_error(out2):
+                    # fallback plain
+                    cmd_try = 'show vlan'
+                    out2 = self.run_device_command(cmd_try, timeout=6)
+                if not self._is_cli_error(out2):
+                    self.session_cmd_cache[cache_key] = cmd_try
+                    return out2, cmd_try
+
+            elif m == 'arista':
+                h2 = self.run_device_command('show vlan ?', timeout=3)
+                cmd_try = 'show vlan brief' if 'brief' in (h2 or '').lower() else 'show vlan'
+                out2 = self.run_device_command(cmd_try, timeout=6)
+                if not self._is_cli_error(out2):
+                    self.session_cmd_cache[cache_key] = cmd_try
+                    return out2, cmd_try
+
+            elif m == 'juniper':
+                cmd_try = 'show vlans'
+                out2 = self.run_device_command(cmd_try, timeout=6)
+                if not self._is_cli_error(out2):
+                    self.session_cmd_cache[cache_key] = cmd_try
+                    return out2, cmd_try
+        except Exception:
+            pass
+
+        # If all else fails, return first attempt
+        return out, base
+
     def increase_terminal_font(self):
         # Increase font size up to a sensible maximum
         try:
@@ -570,6 +717,126 @@ class NetApp(tk.Tk):
             messagebox.showinfo("Export", f"Saved to {path}")
         except Exception as e:
             messagebox.showerror("Export Failed", str(e))
+
+    def _get_vlan_show_command(self, manufacturer):
+        m = (manufacturer or '').strip().lower()
+        if m == 'h3c':
+            return 'display vlan'
+        if m == 'cisco':
+            return 'show vlan brief'
+        if m == 'juniper':
+            return 'show vlans'
+        if m == 'arista':
+            return 'show vlan'
+        return 'show vlan'
+
+    def _parse_vlans(self, manufacturer, output):
+        """Parse VLANs from device output. Returns list of dicts {id, name}."""
+        vlans = []
+        m = (manufacturer or '').strip().lower()
+        # Clean common control chars (e.g., backspace 0x08) and split lines
+        safe_output = (output or '').replace('\x08', '')
+        lines = safe_output.splitlines()
+        # Common patterns
+        cisco_rx = re.compile(r"^(\d+)\s+([\w\-]+)", re.IGNORECASE)
+        h3c_id_rx = re.compile(r"VLAN\s*ID\s*:\s*(\d+)", re.IGNORECASE)
+        h3c_name_rx = re.compile(r"Name\s*:\s*([^\n]+)", re.IGNORECASE)
+        juniper_rx = re.compile(r"^VLAN\s*:\s*([\w\-]+)\s*(\d+)", re.IGNORECASE)
+        arista_rx = re.compile(r"^(\d+)\s+([\w\-]+)", re.IGNORECASE)
+
+        if m == 'cisco' or m == 'arista':
+            for line in lines:
+                mm = cisco_rx.search(line) if m == 'cisco' else arista_rx.search(line)
+                if mm:
+                    vid = mm.group(1)
+                    name = mm.group(2)
+                    # Skip header rows like 'VLAN Name'
+                    if vid.lower() == 'vlan' or name.lower() == 'name':
+                        continue
+                    vlans.append({'id': vid, 'name': name})
+        elif m == 'h3c':
+            # Pattern A: per-VLAN detail blocks
+            current = {}
+            for line in lines:
+                mid = h3c_id_rx.search(line)
+                if mid:
+                    if current:
+                        vlans.append(current)
+                    current = {'id': mid.group(1), 'name': ''}
+                    continue
+                mname = h3c_name_rx.search(line)
+                if mname:
+                    nm = mname.group(1).strip()
+                    if current:
+                        current['name'] = nm
+            if current:
+                vlans.append(current)
+
+            # Pattern B: summary list like "The VLANs include: 1(default), 10, 20, ..."
+            try:
+                # Find line that mentions include
+                include_idx = None
+                for i, line in enumerate(lines):
+                    if 'vlans include' in line.lower():
+                        include_idx = i
+                        break
+                if include_idx is not None:
+                    # Accumulate items from the include line and a few lines after
+                    list_text = ''
+                    # grab remainder of the include line after ':' if present
+                    part = lines[include_idx]
+                    mm = re.search(r"include\s*:([^\n]*)", part, re.IGNORECASE)
+                    if mm:
+                        list_text += mm.group(1)
+                    # Append following lines until prompt or blank
+                    for j in range(include_idx + 1, min(include_idx + 6, len(lines))):
+                        nxt = lines[j].strip()
+                        if not nxt:
+                            break
+                        if nxt.startswith('[') or nxt.lower().startswith('total vlan') or nxt.lower().startswith('display '):
+                            break
+                        list_text += ' ' + nxt
+                    # Parse comma-separated items
+                    tokens = [t.strip() for t in list_text.split(',') if t.strip()]
+                    for tok in tokens:
+                        mm2 = re.search(r"^(\d{1,4})(?:\(([^)]+)\))?", tok)
+                        if mm2:
+                            vid = mm2.group(1)
+                            nm = mm2.group(2) or ''
+                            vlans.append({'id': vid, 'name': nm})
+            except Exception:
+                pass
+        elif m == 'juniper':
+            for line in lines:
+                mm = juniper_rx.search(line)
+                if mm:
+                    name = mm.group(1)
+                    vid = mm.group(2)
+                    vlans.append({'id': vid, 'name': name})
+        else:
+            # Fallback: find any lines starting with a VLAN number
+            generic_rx = re.compile(r"^(\d{1,4})\s+([\w\-]*)", re.IGNORECASE)
+            for line in lines:
+                mm = generic_rx.search(line)
+                if mm:
+                    vlans.append({'id': mm.group(1), 'name': mm.group(2)})
+        # Deduplicate by id
+        seen = set()
+        uniq = []
+        for v in vlans:
+            if v['id'] not in seen:
+                uniq.append(v)
+                seen.add(v['id'])
+        return uniq
+
+    def _summarize_vlans(self, vlans):
+        if not vlans:
+            return "No VLANs found or unable to parse."
+        parts = []
+        for v in vlans:
+            name = v.get('name') or '-'
+            parts.append(f"{v['id']}({name})")
+        return f"Found {len(vlans)} VLANs: " + ", ".join(parts)
 
     def send_pager_next(self):
         # Manually advance pager one page (space)
@@ -756,6 +1023,73 @@ class NetApp(tk.Tk):
         self.ai_output.insert(tk.END, "------------------------\n")
         self.ai_output.insert(tk.END, "\n".join(commands))
         self.update_status("AI response received.")
+
+    def chat_ask(self, event=None):
+        """Chat: answer device info questions by querying backend; generate commands for changes."""
+        text = self.chat_input.get().strip()
+        if not text:
+            return
+        self.chat_log.insert(tk.END, f"You: {text}\n")
+        self.chat_input.delete(0, tk.END)
+
+        manufacturer = (self.man_entry.get() or '').strip()
+        if not manufacturer:
+            self.chat_log.insert(tk.END, "System: Please set Manufacturer in AI Configuration.\n\n")
+            self.update_status("Chat needs manufacturer context")
+            return
+
+        lower = text.lower()
+        change_words = ["add", "create", "remove", "delete", "modify", "change", "rename", "assign", "set"]
+        mentions_vlan = "vlan" in lower or "vlans" in lower
+        is_change = any(w in lower for w in change_words)
+
+        try:
+            if mentions_vlan and not is_change:
+                # Info query: list VLANs by querying device with auto-correct
+                output, used_cmd = self._execute_vlan_show_with_autocorrect(manufacturer)
+                self.update_status(f"Ran: {used_cmd}")
+                vlans = self._parse_vlans(manufacturer, output)
+                summary = self._summarize_vlans(vlans)
+                self.chat_log.insert(tk.END, f"Device: {summary}\n")
+                if vlans:
+                    for v in vlans:
+                        name = v.get('name') or '-'
+                        self.chat_log.insert(tk.END, f"- VLAN {v['id']} Name: {name}\n")
+                self.chat_log.insert(tk.END, "\n")
+                self.chat_log.see(tk.END)
+                self.update_status("Chat: VLANs listed.")
+                return
+        except Exception as e:
+            self.chat_log.insert(tk.END, f"System: Failed to query device: {e}\n\n")
+            self.update_status("Chat query failed")
+            return
+
+        # Change request: generate commands with AI
+        self.update_status("Generating commands via AI…")
+        commands = self.ai_provider.get_commands(
+            text,
+            manufacturer,
+            self.model_entry.get(),
+            self.ver_entry.get(),
+            self.use_web_search_var.get(),
+            self.ollama_model_combo.get(),
+            self.get_selected_gemini_model_full()
+        )
+        self.chat_log.insert(tk.END, "AI: Proposed commands:\n")
+        for cmd in commands:
+            self.chat_log.insert(tk.END, cmd + "\n")
+        self.chat_log.insert(tk.END, "\n")
+        # Mirror into AI output pane for optional push
+        try:
+            self.ai_output.delete('1.0', tk.END)
+            self.ai_output.insert(tk.END, "AI Generated Commands:\n")
+            self.ai_output.insert(tk.END, "------------------------\n")
+            self.ai_output.insert(tk.END, "\n".join(commands))
+            self.push_to_device_btn.config(state=tk.NORMAL)
+        except Exception:
+            pass
+        self.chat_log.see(tk.END)
+        self.update_status("Chat: commands generated")
 
     def fetch_device_info(self):
         if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:

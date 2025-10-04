@@ -325,6 +325,10 @@ class NetApp(tk.Tk):
         tk.Label(context_frame, text="Version:").grid(row=2, column=0, sticky="w")
         self.ver_entry = tk.Entry(context_frame)
         self.ver_entry.grid(row=2, column=1, sticky="ew", padx=2)
+
+        self.fetch_info_btn = tk.Button(context_frame, text="Fetch Device Info", command=self.fetch_device_info)
+        self.fetch_info_btn.grid(row=3, column=0, columnspan=2, pady=5, sticky="ew")
+
         context_frame.columnconfigure(1, weight=1)
         ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
         tk.Label(ai_assistant_frame, text="Your Request:").pack(pady=5, padx=10, anchor="w")
@@ -573,6 +577,115 @@ class NetApp(tk.Tk):
         self.ai_output.insert(tk.END, "------------------------\n")
         self.ai_output.insert(tk.END, "\n".join(commands))
         self.update_status("AI response received.")
+
+    def fetch_device_info(self):
+        if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:
+            messagebox.showerror("Error", "Not connected to any device.")
+            return
+
+        manufacturer = self.man_entry.get().lower().strip()
+        if not manufacturer:
+            messagebox.showerror("Input Error", "Manufacturer is required to fetch device info.")
+            return
+
+        # Determine the correct command
+        if manufacturer == 'h3c':
+            cmd = 'display version'
+        else:
+            # A common default for many vendors like Cisco, Juniper, Arista
+            cmd = 'show version'
+
+        self.log_to_terminal(f"\n>>> Fetching device info with '{cmd}'...", "info")
+
+        # Clear old info
+        self.model_entry.delete(0, tk.END)
+        self.ver_entry.delete(0, tk.END)
+
+        # Send the command
+        try:
+            # The response will be read by the async serial reader and appended to the terminal.
+            # We schedule a parsing function to run after a delay to capture the output.
+            self.connection.write((cmd + '\r\n').encode())
+            self.update_status("Fetching device info... please wait 3 seconds.")
+            self.after(3000, lambda: self.parse_device_info(cmd))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send command: {e}")
+            self.log_to_terminal(f"\n[Send error] {e}\n", "error")
+            self.update_status("Error fetching device info.")
+
+    def parse_device_info(self, command_sent):
+        """Parses the output from the terminal to find model and version."""
+        self.log_to_terminal("\n>>> Parsing device info from terminal output...", "info")
+
+        full_text = self.terminal.get("1.0", tk.END)
+
+        # Heuristic: find the text after the last instance of the command we sent
+        try:
+            last_cmd_index = full_text.rindex(command_sent)
+            # Look at a reasonable chunk of text after the command
+            relevant_output = full_text[last_cmd_index:].splitlines()
+            relevant_output = "\n".join(relevant_output[:25]) # Limit to 25 lines to avoid parsing old data
+        except ValueError:
+            self.log_to_terminal("Could not find command output in terminal. Is the device responsive?", "error")
+            self.update_status("Failed to parse device info.")
+            return
+
+        manufacturer = self.man_entry.get().lower().strip()
+        model, version = "", ""
+
+        # --- Regex patterns for parsing ---
+        patterns = {
+            'h3c': {
+                'model': re.compile(r"H3C\s+([\w-]+)\s+(?:Switch|Router)"),
+                'version': re.compile(r"Comware Software, Version\s+([\d\.\w\s,]+)")
+            },
+            'cisco': {
+                'model': re.compile(r"cisco\s+([\w\S-]+)"),
+                'version': re.compile(r"Cisco IOS Software.*, Version\s+([\w\d.()SE]+)")
+            },
+            'juniper': {
+                'model': re.compile(r"Model:\s+([\w-]+)"),
+                'version': re.compile(r"Junos:\s+([\d\.\w-]+)")
+            }
+        }
+
+        # Use specific patterns if available
+        if manufacturer in patterns:
+            model_match = patterns[manufacturer]['model'].search(relevant_output)
+            if model_match: model = model_match.group(1).strip()
+
+            version_match = patterns[manufacturer]['version'].search(relevant_output)
+            if version_match: version = version_match.group(1).strip()
+
+        # Generic fallback patterns if specific ones fail
+        if not model:
+            # Look for lines starting with "Model", "Hardware", etc.
+            generic_model_match = re.search(r"^(?:Model|Hardware|Chassis|PID)\s*[:=]\s*([\w\S-]+)", relevant_output, re.MULTILINE | re.IGNORECASE)
+            if generic_model_match: model = generic_model_match.group(1).strip()
+
+        if not version:
+            generic_version_match = re.search(r"(?:Version|release|ROM|SW Version)\s+([\d\w.()-]+)", relevant_output, re.IGNORECASE)
+            if generic_version_match: version = generic_version_match.group(1).strip()
+
+        # Update UI
+        if model:
+            self.model_entry.delete(0, tk.END)
+            self.model_entry.insert(0, model)
+            self.log_to_terminal(f"Found Model: {model}", "info")
+        else:
+            self.log_to_terminal("Could not parse model from output.", "error")
+
+        if version:
+            self.ver_entry.delete(0, tk.END)
+            self.ver_entry.insert(0, version)
+            self.log_to_terminal(f"Found Version: {version}", "info")
+        else:
+            self.log_to_terminal("Could not parse version from output.", "error")
+
+        if model and version:
+            self.update_status("Device info fetched successfully.")
+        else:
+            self.update_status("Could not fetch all device info.")
 
     def set_ai_provider(self):
         provider = self.ai_provider_combo.get()

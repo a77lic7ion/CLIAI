@@ -43,6 +43,23 @@ MANUFACTURER_TO_DEVICE_TYPE = {
     "arista": "arista_eos",
 }
 
+# --- Manufacturer to Device Category Mapping ---
+MANUFACTURER_TO_CATEGORY = {
+    "h3c": "Switch",
+    "cisco": "Switch",
+    "juniper": "Firewall",
+    "arista": "Switch",
+    "vello": "VELLO",
+    # Add more mappings as needed, these are examples
+    "fortinet": "Firewall",
+    "paloalto": "Firewall",
+    "f5": "Firewall",
+    "check point": "Firewall",
+    "brocade": "Switch",
+    "extreme": "Switch",
+    "huawei": "Switch",
+}
+
 class AIProvider:
     def __init__(self):
         self.provider = "None"
@@ -265,6 +282,8 @@ class NetApp(tk.Tk):
         self.profiles = {}
         self.profiles_file = 'profiles.json'
         self.ai_provider = AIProvider()
+        self.device_commands = {}
+        self.commands_file = 'cli_commands.json'
 
         # --- Main Content Frame ---
         main_frame = tk.Frame(self)
@@ -377,9 +396,12 @@ class NetApp(tk.Tk):
         tk.Label(context_frame, text="Version:").grid(row=2, column=0, sticky="w")
         self.ver_entry = tk.Entry(context_frame)
         self.ver_entry.grid(row=2, column=1, sticky="ew", padx=2)
+        tk.Label(context_frame, text="Type:").grid(row=3, column=0, sticky="w")
+        self.type_entry = tk.Entry(context_frame, state='readonly')
+        self.type_entry.grid(row=3, column=1, sticky="ew", padx=2)
 
         self.fetch_info_btn = tk.Button(context_frame, text="Fetch Device Info", command=self.fetch_device_info)
-        self.fetch_info_btn.grid(row=3, column=0, columnspan=2, pady=5, sticky="ew")
+        self.fetch_info_btn.grid(row=4, column=0, columnspan=2, pady=5, sticky="ew")
 
         context_frame.columnconfigure(1, weight=1)
         ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
@@ -390,11 +412,20 @@ class NetApp(tk.Tk):
         self.use_web_search_var = tk.BooleanVar(value=True)
         self.web_search_check = tk.Checkbutton(ai_assistant_frame, text="Use Web Search (Gemini)", variable=self.use_web_search_var)
         self.web_search_check.pack(pady=5, padx=10, anchor="w")
-        tk.Button(ai_assistant_frame, text="Generate Commands", command=self.query_ai).pack(pady=5, padx=10, fill="x")
+
+        ai_btn_frame = tk.Frame(ai_assistant_frame)
+        ai_btn_frame.pack(pady=5, padx=10, fill="x")
+        tk.Button(ai_btn_frame, text="Generate Commands", command=self.query_ai).pack(side=tk.LEFT, fill='x', expand=True, padx=(0, 5))
+        tk.Button(ai_btn_frame, text="Fetch Recommended Commands", command=self.fetch_recommended_commands).pack(side=tk.LEFT, fill='x', expand=True, padx=(5, 0))
+
         self.ai_output = scrolledtext.ScrolledText(ai_assistant_frame, wrap=tk.WORD, height=10, font=("Consolas", 10))
         self.ai_output.pack(pady=10, padx=10, expand=True, fill="both")
-        self.push_to_device_btn = tk.Button(ai_assistant_frame, text="Push to Connected Device", command=self.push_ai_commands, state=tk.DISABLED)
-        self.push_to_device_btn.pack(pady=10, padx=10, fill="x")
+
+        action_btn_frame = tk.Frame(ai_assistant_frame)
+        action_btn_frame.pack(pady=10, padx=10, fill="x")
+        self.push_to_device_btn = tk.Button(action_btn_frame, text="Push to Connected Device", command=self.push_ai_commands, state=tk.DISABLED)
+        self.push_to_device_btn.pack(side=tk.LEFT, fill='x', expand=True, padx=(0, 5))
+        tk.Button(action_btn_frame, text="Save Commands", command=self.save_fetched_commands).pack(side=tk.LEFT, fill='x', expand=True, padx=(5, 0))
 
         # --- Status Bar ---
         self.status_var = tk.StringVar()
@@ -402,8 +433,30 @@ class NetApp(tk.Tk):
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         
         self.load_profiles()
+        self.load_device_commands()
         self.on_ai_provider_change()
         self.update_status("Ready")
+
+    def load_device_commands(self):
+        if os.path.exists(self.commands_file):
+            with open(self.commands_file, 'r') as f:
+                try:
+                    self.device_commands = json.load(f)
+                    self.log_to_terminal(f"Loaded device commands from {self.commands_file}", "info")
+                except json.JSONDecodeError:
+                    self.log_to_terminal(f"Warning: Could not decode {self.commands_file}. Starting fresh.", "error")
+                    self.device_commands = {}
+        else:
+            self.log_to_terminal("No device command file found. A new one will be created.", "info")
+            self.device_commands = {}
+
+    def save_device_commands(self):
+        try:
+            with open(self.commands_file, 'w') as f:
+                json.dump(self.device_commands, f, indent=4)
+            self.log_to_terminal(f"Saved device commands to {self.commands_file}", "info")
+        except Exception as e:
+            self.log_to_terminal(f"Error saving commands: {e}", "error")
 
     def update_status(self, message):
         self.status_var.set(message)
@@ -757,6 +810,37 @@ class NetApp(tk.Tk):
         self.ai_output.insert(tk.END, "\n".join(commands))
         self.update_status("AI response received.")
 
+    def fetch_recommended_commands(self):
+        manufacturer = self.man_entry.get()
+        device_type = self.type_entry.get()
+        model = self.model_entry.get()
+
+        if not manufacturer or not device_type:
+            messagebox.showerror("Input Error", "Manufacturer and Type are required to fetch recommendations.")
+            return
+
+        prompt = f"List the most common and useful operational CLI commands for a {manufacturer} {model} {device_type}. Provide only the commands, one per line, without any explanation or markdown."
+
+        self.ai_output.delete('1.0', tk.END)
+        self.ai_output.insert(tk.END, f"> Fetching recommended commands for: {manufacturer} {device_type}\n\n")
+        self.update_status("Querying AI for recommended commands...")
+        self.update_idletasks()
+
+        commands = self.ai_provider.get_commands(
+            prompt,
+            manufacturer,
+            model,
+            self.ver_entry.get(),
+            self.use_web_search_var.get(),
+            self.ollama_model_combo.get(),
+            self.get_selected_gemini_model_full()
+        )
+
+        self.ai_output.insert(tk.END, "AI Generated Commands:\n")
+        self.ai_output.insert(tk.END, "------------------------\n")
+        self.ai_output.insert(tk.END, "\n".join(commands))
+        self.update_status("AI response received.")
+
     def fetch_device_info(self):
         if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:
             messagebox.showerror("Error", "Not connected to any device.")
@@ -896,6 +980,14 @@ class NetApp(tk.Tk):
         else:
             self.log_to_terminal("Could not parse version from output.", "error")
 
+        # Determine and set device type
+        device_type = MANUFACTURER_TO_CATEGORY.get(manufacturer.lower(), "Unknown")
+        self.type_entry.config(state='normal')
+        self.type_entry.delete(0, tk.END)
+        self.type_entry.insert(0, device_type)
+        self.type_entry.config(state='readonly')
+        self.log_to_terminal(f"Determined Device Type: {device_type}", "info")
+
         if model and version:
             self.update_status("Device info fetched successfully.")
         else:
@@ -964,6 +1056,46 @@ class NetApp(tk.Tk):
             
         self.update_status("Commands sent. Ready.")
 
+    def save_fetched_commands(self):
+        manufacturer = self.man_entry.get().lower()
+        device_type = self.type_entry.get()
+
+        if not manufacturer or not device_type:
+            messagebox.showerror("Error", "Manufacturer and Type are required to save commands.")
+            return
+
+        commands_text = self.ai_output.get("1.0", tk.END)
+        lines = commands_text.split("------------------------\n")
+        if len(lines) < 2:
+            messagebox.showinfo("Info", "No commands to save.")
+            return
+
+        commands_to_save = [cmd.strip() for cmd in lines[1].strip().split("\n") if cmd.strip() and not cmd.startswith("#")]
+
+        if not commands_to_save:
+            messagebox.showinfo("Info", "No valid commands found to save.")
+            return
+
+        # Ensure manufacturer and device_type keys exist
+        if manufacturer not in self.device_commands:
+            self.device_commands[manufacturer] = {}
+        if device_type not in self.device_commands[manufacturer]:
+            self.device_commands[manufacturer][device_type] = []
+
+        # Add only new commands to avoid duplicates
+        existing_commands = self.device_commands[manufacturer][device_type]
+        newly_added_count = 0
+        for cmd in commands_to_save:
+            if cmd not in existing_commands:
+                existing_commands.append(cmd)
+                newly_added_count += 1
+
+        if newly_added_count > 0:
+            self.save_device_commands()
+            messagebox.showinfo("Success", f"{newly_added_count} new command(s) saved for {manufacturer} - {device_type}.")
+        else:
+            messagebox.showinfo("Info", "All commands are already saved for this device type.")
+
     def log_to_terminal(self, message, tag=None):
         self.terminal.tag_config("info", foreground="cyan")
         self.terminal.tag_config("error", foreground="red")
@@ -1027,6 +1159,9 @@ class NetApp(tk.Tk):
             self.man_entry.delete(0, tk.END); self.man_entry.insert(0, profile.get('manufacturer', ''))
             self.model_entry.delete(0, tk.END); self.model_entry.insert(0, profile.get('model', ''))
             self.ver_entry.delete(0, tk.END); self.ver_entry.insert(0, profile.get('version', ''))
+            self.type_entry.config(state='normal')
+            self.type_entry.delete(0, tk.END); self.type_entry.insert(0, profile.get('device_type', ''))
+            self.type_entry.config(state='readonly')
             self.update_status(f"Loaded profile: {profile_name}")
 
     def save_profile(self):
@@ -1038,7 +1173,8 @@ class NetApp(tk.Tk):
                 'password': self.pass_entry.get(),
                 'manufacturer': self.man_entry.get(),
                 'model': self.model_entry.get(),
-                'version': self.ver_entry.get()
+                'version': self.ver_entry.get(),
+                'device_type': self.type_entry.get()
             }
             with open(self.profiles_file, 'w') as f:
                 json.dump(self.profiles, f, indent=4)
@@ -1054,8 +1190,13 @@ class NetApp(tk.Tk):
                 del self.profiles[profile_name]
                 with open(self.profiles_file, 'w') as f: json.dump(self.profiles, f, indent=4)
                 self.com_port_combo.set('')
-                for entry in [self.user_entry, self.pass_entry, self.man_entry, self.model_entry, self.ver_entry]:
-                    entry.delete(0, tk.END)
+                for entry in [self.user_entry, self.pass_entry, self.man_entry, self.model_entry, self.ver_entry, self.type_entry]:
+                    if entry == self.type_entry:
+                        entry.config(state='normal')
+                        entry.delete(0, tk.END)
+                        entry.config(state='readonly')
+                    else:
+                        entry.delete(0, tk.END)
                 self.update_profile_list()
                 self.update_status(f"Deleted profile: {profile_name}")
 

@@ -775,6 +775,8 @@ class NetApp(tk.Tk):
             cmd = 'show version'
 
         self.log_to_terminal(f"\n>>> Fetching device info with '{cmd}'...", "info")
+        # Track attempts to allow fallback commands
+        self.device_info_attempt = 1
 
         # Clear old info
         self.model_entry.delete(0, tk.END)
@@ -803,7 +805,7 @@ class NetApp(tk.Tk):
             last_cmd_index = full_text.rindex(command_sent)
             # Look at a reasonable chunk of text after the command
             relevant_output = full_text[last_cmd_index:].splitlines()
-            relevant_output = "\n".join(relevant_output[:25]) # Limit to 25 lines to avoid parsing old data
+            relevant_output = "\n".join(relevant_output[:60]) # Limit to 60 lines to capture multi-line banners
         except ValueError:
             self.log_to_terminal("Could not find command output in terminal. Is the device responsive?", "error")
             self.update_status("Failed to parse device info.")
@@ -815,8 +817,17 @@ class NetApp(tk.Tk):
         # --- Regex patterns for parsing ---
         patterns = {
             'h3c': {
-                'model': re.compile(r"H3C\s+([\w-]+)\s+(?:Switch|Router)"),
-                'version': re.compile(r"Comware Software, Version\s+([\d\.\w\s,]+)")
+                # Multiple patterns to capture H3C model
+                'model_patterns': [
+                    re.compile(r"H3C\s+([A-Z0-9-]+)\s+uptime", re.IGNORECASE),
+                    re.compile(r"\[Subslot\s*\d+\]\s*([A-Z0-9-]+)\s+Hardware", re.IGNORECASE),
+                    re.compile(r"H3C\s+([A-Z0-9-]+)\s", re.IGNORECASE),
+                ],
+                'version_patterns': [
+                    re.compile(r"Comware\s+Software,\s+Version\s+([^\n]+)", re.IGNORECASE),
+                    re.compile(r"System\s+image\s+version:\s*([^\n]+)", re.IGNORECASE),
+                    re.compile(r"Boot\s+image\s+version:\s*([^\n]+)", re.IGNORECASE),
+                ],
             },
             'cisco': {
                 'model': re.compile(r"cisco\s+([\w\S-]+)"),
@@ -830,11 +841,22 @@ class NetApp(tk.Tk):
 
         # Use specific patterns if available
         if manufacturer in patterns:
-            model_match = patterns[manufacturer]['model'].search(relevant_output)
-            if model_match: model = model_match.group(1).strip()
-
-            version_match = patterns[manufacturer]['version'].search(relevant_output)
-            if version_match: version = version_match.group(1).strip()
+            if manufacturer == 'h3c':
+                for rx in patterns['h3c']['model_patterns']:
+                    mm = rx.search(relevant_output)
+                    if mm:
+                        model = mm.group(1).strip()
+                        break
+                for rxv in patterns['h3c']['version_patterns']:
+                    vm = rxv.search(relevant_output)
+                    if vm:
+                        version = vm.group(1).strip()
+                        break
+            else:
+                model_match = patterns[manufacturer]['model'].search(relevant_output)
+                if model_match: model = model_match.group(1).strip()
+                version_match = patterns[manufacturer]['version'].search(relevant_output)
+                if version_match: version = version_match.group(1).strip()
 
         # Generic fallback patterns if specific ones fail
         if not model:
@@ -845,6 +867,19 @@ class NetApp(tk.Tk):
         if not version:
             generic_version_match = re.search(r"(?:Version|release|ROM|SW Version)\s+([\d\w.()-]+)", relevant_output, re.IGNORECASE)
             if generic_version_match: version = generic_version_match.group(1).strip()
+
+        # If H3C and still no model, try an alternate command for manufacturer info
+        if manufacturer == 'h3c' and not model:
+            if getattr(self, 'device_info_attempt', 1) < 2:
+                try:
+                    alt_cmd = 'display device manuinfo'
+                    self.log_to_terminal(f"\nModel not found; trying alternate H3C command '{alt_cmd}'...", "info")
+                    self.connection.write((alt_cmd + '\r\n').encode())
+                    self.device_info_attempt = 2
+                    self.after(3000, lambda: self.parse_device_info(alt_cmd))
+                    return
+                except Exception as e:
+                    self.log_to_terminal(f"Alternate command failed: {e}", "error")
 
         # Update UI
         if model:
@@ -865,6 +900,13 @@ class NetApp(tk.Tk):
             self.update_status("Device info fetched successfully.")
         else:
             self.update_status("Could not fetch all device info.")
+
+        # Persist parsed device info to the currently selected profile for continuous configuration
+        try:
+            self._persist_device_info_to_profile()
+        except Exception as e:
+            # Non-fatal; log and continue
+            self.log_to_terminal(f"Profile persistence skipped: {e}", "error")
 
     def set_ai_provider(self):
         provider = self.ai_provider_combo.get()
@@ -931,6 +973,36 @@ class NetApp(tk.Tk):
         self.terminal.insert(tk.END, message + "\n", tag)
         self.terminal.see(tk.END)
         self.update_idletasks()
+
+    def _persist_device_info_to_profile(self):
+        """Persist manufacturer, model, and version to the active profile for memory."""
+        profile_name = self.profile_combo.get()
+        if not profile_name:
+            return
+        # Gather current fields
+        manufacturer = self.man_entry.get()
+        model = self.model_entry.get()
+        version = self.ver_entry.get()
+        if not (manufacturer or model or version):
+            return
+        # Update profile in memory
+        profile = self.profiles.get(profile_name, {})
+        profile.update({
+            'com_port': self.com_port_combo.get() or profile.get('com_port', ''),
+            'username': self.user_entry.get() or profile.get('username', ''),
+            'password': self.pass_entry.get() or profile.get('password', ''),
+            'manufacturer': manufacturer,
+            'model': model,
+            'version': version,
+        })
+        self.profiles[profile_name] = profile
+        # Write to disk
+        try:
+            with open(self.profiles_file, 'w') as f:
+                json.dump(self.profiles, f, indent=4)
+            self.log_to_terminal(f"Profile '{profile_name}' updated with device info.", "info")
+        except Exception as e:
+            self.log_to_terminal(f"Failed to update profile file: {e}", "error")
 
     def load_profiles(self):
         if os.path.exists(self.profiles_file):

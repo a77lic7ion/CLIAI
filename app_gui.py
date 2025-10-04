@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import scrolledtext, simpledialog, messagebox, ttk
+from tkinter import scrolledtext, simpledialog, messagebox, ttk, filedialog
 import json
 import os
 import re
@@ -313,6 +313,24 @@ class NetApp(tk.Tk):
         self.term_input.bind("<Return>", self.send_terminal_input)
         tk.Button(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=5)
 
+        # Terminal options: wrap mode and clear
+        terminal_opts_frame = tk.Frame(terminal_frame)
+        terminal_opts_frame.pack(fill="x", padx=10, pady=2)
+        tk.Label(terminal_opts_frame, text="Terminal Wrap:").pack(side=tk.LEFT)
+        self.term_wrap_combo = ttk.Combobox(terminal_opts_frame, state="readonly", values=["Wrap (word)", "No wrap"], width=12)
+        self.term_wrap_combo.set("Wrap (word)")
+        self.term_wrap_combo.bind("<<ComboboxSelected>>", self.on_term_wrap_change)
+        self.term_wrap_combo.pack(side=tk.LEFT, padx=5)
+        tk.Button(terminal_opts_frame, text="Font +", command=self.increase_terminal_font).pack(side=tk.LEFT, padx=5)
+        tk.Button(terminal_opts_frame, text="Font -", command=self.decrease_terminal_font).pack(side=tk.LEFT)
+        # Pager controls
+        self.auto_pager_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(terminal_opts_frame, text="Auto-advance pager", variable=self.auto_pager_var).pack(side=tk.LEFT, padx=10)
+        tk.Button(terminal_opts_frame, text="Next Page", command=self.send_pager_next).pack(side=tk.LEFT)
+        tk.Button(terminal_opts_frame, text="Stop Paging", command=self.send_pager_stop).pack(side=tk.LEFT, padx=5)
+        tk.Button(terminal_opts_frame, text="Export…", command=self.export_terminal_chat).pack(side=tk.RIGHT, padx=5)
+        tk.Button(terminal_opts_frame, text="Clear", command=self.clear_terminal).pack(side=tk.RIGHT)
+
         ai_pane = tk.PanedWindow(main_frame, orient=tk.VERTICAL, sashrelief=tk.RAISED)
         main_pane.add(ai_pane)
 
@@ -321,7 +339,7 @@ class NetApp(tk.Tk):
         tk.Label(ai_config_frame, text="Provider:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.ai_provider_combo = ttk.Combobox(ai_config_frame, state="readonly", values=["None", "Gemini", "OpenAI", "Mistral", "Claude", "Ollama", "Simulation"])
         self.ai_provider_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        self.ai_provider_combo.set("None")
+        self.ai_provider_combo.set("Gemini")
         self.ai_provider_combo.bind("<<ComboboxSelected>>", self.on_ai_provider_change)
         tk.Label(ai_config_frame, text="API Key:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
         self.api_key_entry = tk.Entry(ai_config_frame, show="*")
@@ -332,12 +350,19 @@ class NetApp(tk.Tk):
         tk.Label(ai_config_frame, text="Gemini Model:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
         self.gemini_model_combo = ttk.Combobox(ai_config_frame, state="readonly", values=["1.5-flash", "2.0-flash", "1.5-pro"])
         self.gemini_model_combo.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
-        self.gemini_model_combo.set("1.5-flash")
+        self.gemini_model_combo.set("2.0-flash")
         # Buttons: Set provider and Check API Key
         self.set_ai_btn = tk.Button(ai_config_frame, text="Set AI Provider", command=self.set_ai_provider)
         self.set_ai_btn.grid(row=4, column=0, padx=5, pady=5, sticky="ew")
         self.check_api_btn = tk.Button(ai_config_frame, text="Check API Key", command=self.check_api_key)
         self.check_api_btn.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
+        # Apply requested defaults and initialize provider
+        try:
+            self.api_key_entry.delete(0, tk.END)
+            self.api_key_entry.insert(0, "AIzaSyASna_AVZT5NynbpU1eNzXwnxWgo4f_6Lc")
+            self.set_ai_provider()
+        except Exception:
+            pass
 
         ai_assistant_frame = tk.LabelFrame(ai_pane, text="AI Assistant", relief=tk.GROOVE)
         ai_pane.add(ai_assistant_frame)
@@ -493,6 +518,75 @@ class NetApp(tk.Tk):
         else:
             self.connect()
 
+    def on_term_wrap_change(self, event=None):
+        mode = self.term_wrap_combo.get()
+        try:
+            self.terminal.config(wrap=tk.NONE if mode == "No wrap" else tk.WORD)
+        except Exception:
+            pass
+
+    def clear_terminal(self):
+        try:
+            self.terminal.delete('1.0', tk.END)
+        except Exception:
+            pass
+
+    def increase_terminal_font(self):
+        # Increase font size up to a sensible maximum
+        try:
+            current = getattr(self, 'terminal_font_size', 10)
+            new_size = min(current + 1, 48)
+            self.terminal_font_size = new_size
+            self.terminal.configure(font=("Consolas", new_size))
+        except Exception:
+            pass
+
+    def decrease_terminal_font(self):
+        # Decrease font size down to a sensible minimum
+        try:
+            current = getattr(self, 'terminal_font_size', 10)
+            new_size = max(current - 1, 6)
+            self.terminal_font_size = new_size
+            self.terminal.configure(font=("Consolas", new_size))
+        except Exception:
+            pass
+
+    def export_terminal_chat(self):
+        # Export terminal contents to a .txt file via save dialog
+        try:
+            content = self.terminal.get('1.0', tk.END).strip()
+            if not content:
+                messagebox.showinfo("Export", "Terminal is empty.")
+                return
+            path = filedialog.asksaveasfilename(
+                title="Export Terminal Chat",
+                defaultextension=".txt",
+                filetypes=[["Text Files", "*.txt"], ["All Files", "*.*"]]
+            )
+            if not path:
+                return
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content + "\n")
+            messagebox.showinfo("Export", f"Saved to {path}")
+        except Exception as e:
+            messagebox.showerror("Export Failed", str(e))
+
+    def send_pager_next(self):
+        # Manually advance pager one page (space)
+        try:
+            if self.connection and getattr(self, "is_connected", False):
+                self.connection.write(b' ')
+        except Exception:
+            pass
+
+    def send_pager_stop(self):
+        # Stop paging (q)
+        try:
+            if self.connection and getattr(self, "is_connected", False):
+                self.connection.write(b'q')
+        except Exception:
+            pass
+
     def connect(self):
         com_port = self.com_port_combo.get()
         username = self.user_entry.get()
@@ -564,6 +658,14 @@ class NetApp(tk.Tk):
                             text = data.decode('utf-8', errors='ignore')
                         except Exception:
                             text = data.decode('latin-1', errors='ignore')
+                        # Auto-advance device pager prompts if enabled
+                        try:
+                            if getattr(self, 'auto_pager_var', None) and self.auto_pager_var.get():
+                                if re.search(r"-{2,}\s*More\s*-{2,}|--More--|----\s*More\s*----", text, re.IGNORECASE):
+                                    # Send a single space to advance one page
+                                    self.connection.write(b' ')
+                        except Exception:
+                            pass
                         self.serial_queue.put(text)
                 else:
                     # Small sleep to avoid busy loop
@@ -587,11 +689,16 @@ class NetApp(tk.Tk):
             self.after(50 if drained else 100, self._drain_serial_queue)
 
     def send_terminal_input(self, event=None):
-        if not self.connection or not self.is_connected:
-            messagebox.showerror("Error", "Not connected to any device")
-            return
         cmd = self.term_input.get().strip()
+        # Local CLI: clear terminal regardless of connection
+        if cmd.lower() in ("clear", "cls"):
+            self.clear_terminal()
+            self.term_input.delete(0, tk.END)
+            return
         if not cmd:
+            return
+        if not self.connection or not getattr(self, "is_connected", False):
+            messagebox.showerror("Error", "Not connected to any device")
             return
         try:
             # Echo command to terminal and send to device

@@ -841,7 +841,7 @@ class NetApp(tk.Tk):
                 if m:
                     tok = m.group(1)
                     # Filter overly generic or prompt-like artifacts
-                    if tok.lower() in {"more", "usage", "help"}:
+                    if tok.lower() in {"more", "usage", "help", "system"}:
                         continue
                     if tok not in tokens:
                         tokens.append(tok)
@@ -962,6 +962,19 @@ class NetApp(tk.Tk):
             except Exception:
                 available_text = ''
 
+            # Fallback: use latest cached '?' output from DB if present
+            if not available_text:
+                try:
+                    cursor.execute(
+                        "SELECT commands_text FROM available_commands_cache WHERE manufacturer = ? ORDER BY timestamp DESC LIMIT 1",
+                        (manufacturer,)
+                    )
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        available_text = row[0]
+                except Exception:
+                    pass
+
             # If we don't have '?' text yet, try to fetch directly from the device
             if not available_text:
                 try:
@@ -1007,6 +1020,11 @@ class NetApp(tk.Tk):
                 try:
                     if self.stop_db_build_event and self.stop_db_build_event.is_set():
                         return
+                except Exception:
+                    pass
+                # Sort tokens alphabetically to start from 'A'
+                try:
+                    tokens = sorted(set(tokens), key=lambda x: x.lower())
                 except Exception:
                     pass
                 visited = set()
@@ -1679,8 +1697,9 @@ class NetApp(tk.Tk):
     def _ensure_root_prompt(self, manufacturer):
         """Ensure the device is at the main starting view before sending expansion commands.
 
-        For H3C/Huawei VRP, repeatedly send 'quit' to back out of feature views
-        until the bracketed prompt no longer contains a '-' segment.
+        For H3C/Huawei VRP, remain in System View and avoid quitting out.
+        If currently in User View ('<...>'), enter System View with 'system-view'.
+        Do not treat hyphens in hostnames as feature-view indicators.
         For Cisco/Arista IOS-like prompts, send 'end' and 'exit' as needed to leave (config*) modes.
         For Juniper, detect '[edit …]' and use 'top' then 'exit' to leave configuration.
         For other vendors, only wake the line to avoid accidental logout.
@@ -1696,41 +1715,22 @@ class NetApp(tk.Tk):
             except Exception:
                 last_line = ''
 
-            # Only apply aggressive backoff for H3C/Huawei VRP
+            # H3C/Huawei VRP: ensure System View without quitting out
             if ('h3c' in manuf or 'huawei' in manuf):
-                # If in a sub-mode like [HOSTNAME-igmp-snooping], back out
-                def is_submode_prompt(s: str):
-                    return s.startswith('[') and s.endswith(']') and '-' in s
-
-                attempts = 0
-                while is_submode_prompt(last_line) and attempts < 6:
+                # If we are in user view (<...>), enter system view.
+                if last_line.startswith('<') and last_line.endswith('>'):
                     try:
-                        # Wake the line and back out one level
+                        self.connection.write(b"system-view\r\n")
+                    except Exception:
+                        pass
+                    # brief settle
+                    time.sleep(0.2)
+                else:
+                    # Already in a bracketed prompt (System/feature view). Do not send 'quit'. Wake line only.
+                    try:
                         self.connection.write(b"\r\n")
-                        time.sleep(0.05)
-                        self.connection.write(b"quit\r\n")
                     except Exception:
-                        break
-                    # Let device respond and update terminal
-                    t0 = time.time()
-                    while time.time() - t0 < 0.6:
-                        try:
-                            waiting = self.connection.in_waiting
-                        except Exception:
-                            waiting = 0
-                        if waiting:
-                            try:
-                                chunk = self.connection.read(waiting).decode('utf-8', errors='ignore')
-                                self.log_to_terminal(chunk, 'output')
-                            except Exception:
-                                pass
-                        time.sleep(0.08)
-                    # Refresh prompt detection
-                    try:
-                        last_line = self.terminal.get("end-2l", "end-1l").strip()
-                    except Exception:
-                        last_line = ''
-                    attempts += 1
+                        pass
             elif ('cisco' in manuf or 'arista' in manuf):
                 # Cisco/Arista: leave any (config*) submode; prefer 'end' to jump to exec
                 def in_config_prompt(s: str):

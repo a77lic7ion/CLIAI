@@ -24,6 +24,7 @@ Latest Changes
 - Terminal input improvements:
   - New `?` button sends a space + `?` + Return to reveal available commands.
   - Pressing `Enter` in the inline input sends the typed command immediately.
+  - New `Ctrl+C` interrupt: use the `Ctrl+C` toolbar button or press `Ctrl+C` in the input field to send ETX (0x03) and stop long-running device output. This interrupts the device, not the GUI.
 - Profiles persistence:
   - Saves and restores `Connection Type`, `Host`, and `Port` alongside existing fields.
   - Reset to `Serial` and clears `Host`/`Port` on profile delete.
@@ -31,6 +32,18 @@ Latest Changes
   - Adds a new `command_tree` table storing hierarchical command paths and raw `?` output.
   - BFS expansion of commands via CLI `?`, with safe depth/branch limits.
   - Continues to collect AI guidance for major categories (VLANs, Interfaces, etc.).
+  - Stop Scraping: a `Stop Scraping` button now halts the build safely and restores controls.
+  - Scraper hardening: vendor-aware prompt enforcement returns to the root prompt before each `?` probe and skips error branches to prevent loops.
+
+Scraper Hardening
+- Root prompt enforcement before each CLI `?` expansion:
+  - H3C/Huawei (VRP): repeatedly `quit` to leave feature views and return to `[host]` or `[host]` without `-` segments.
+  - Cisco/Arista (IOS-like): send `end` to leave `config*` then `exit` to reach the exec prompt, guarding against logout at top-level.
+  - Juniper (Junos): use `top` then `exit` to leave `[edit ...]` and return to operational mode.
+  - Others: gently wake the line without risking logout.
+- Error-aware expansion:
+  - Branches returning common CLI errors (e.g., `Unrecognized command`, `Invalid input`) are saved to DB and not expanded further.
+  - Small delays and prompt checks improve stability and reduce mode drift.
 
 Vendor Command Mappings
 - Enter Privileged/Config Mode:
@@ -75,7 +88,7 @@ Quick Start
   - Type commands in the inline input and press `Enter` to send.
   - Use `Send RETURN` to just send Return.
   - Use `?` button to send space + `?` then Return to reveal next tokens.
-  - Use `Ctrl+C` (button or `Ctrl+C` in input field) to interrupt long-running output.
+  - Use `Ctrl+C` (button or `Ctrl+C` in input field) to interrupt long-running output; this sends ETX (0x03) applicable to Serial, SSH (Netmiko), and Telnet.
 - Use AI:
   - In Chat, enter a request, select provider/model, and submit.
   - Click per-command `Send to CLI` or use `Push AI Commands to Device` near the terminal.
@@ -120,6 +133,7 @@ Command Database
   - Click `Build Command Database` to run two phases:
     - CLI phase: BFS explores command hierarchy with `?`, saving into `command_tree`.
     - AI phase: queries guidance for key topics (VLANs, Interfaces, L3, System, Port-Channel).
+  - You can click `Stop Scraping` at any time to interrupt the build. The worker stops promptly and the UI restores the `Build Cmd DB` button.
 - Storage:
   - `cli_cache.db` (SQLite) tables:
     - `available_commands_cache`: raw bulk `?` outputs with context.
@@ -132,6 +146,7 @@ Command Database
 Notes and Tips
 - Set `Manufacturer` correctly; vendor-aware actions and `Netmiko` device type depend on it.
 - Pager prompts like `--More--` are auto-handled by sending space during capture.
+- `Stop Scraping` is cooperative and safe: it checks frequently before device probes and AI queries, avoiding partial writes and preventing accidental logouts.
 - At top-level on Cisco, `exit` may log you out; use `Quit` thoughtfully.
 - For H3C/Huawei, `Save Config` auto-confirms `Y`.
 

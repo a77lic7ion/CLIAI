@@ -406,6 +406,12 @@ class NetApp(tk.Tk):
         self.session_cmd_cache = {}
         self.last_manual_command = None
         self.last_chat_response = None
+        # DB build control
+        self.db_build_thread = None
+        try:
+            self.stop_db_build_event = threading.Event()
+        except Exception:
+            self.stop_db_build_event = None
 
         # --- Main Content Frame ---
         main_frame = tk.Frame(self)
@@ -603,6 +609,12 @@ class NetApp(tk.Tk):
         self.fetch_info_btn.grid(row=4, column=0, pady=5, sticky="ew")
         self.build_db_btn = tk.Button(context_frame, text="Build Cmd DB", command=self.build_command_database)
         self.build_db_btn.grid(row=4, column=1, pady=5, sticky="ew")
+        # Stop scraping/build button (enabled only while building)
+        try:
+            self.stop_db_btn = tk.Button(context_frame, text="Stop Scraping", command=self.stop_command_database, state=tk.DISABLED)
+            self.stop_db_btn.grid(row=4, column=4, pady=5, sticky="ew")
+        except Exception:
+            pass
         self.view_kb_btn = tk.Button(context_frame, text="View KB", command=self.show_knowledge_base_window)
         self.view_kb_btn.grid(row=4, column=2, pady=5, sticky="ew")
         self.import_json_btn = tk.Button(context_frame, text="Import CLI JSON", command=self.import_cli_json)
@@ -905,9 +917,29 @@ class NetApp(tk.Tk):
         if messagebox.askyesno("Confirm", f"This will ask the AI a series of questions to build a knowledge base for '{manufacturer}'. It may take several minutes and incur costs with your AI provider. Continue?"):
             self.log_to_terminal(f"Starting command database build for {manufacturer}...", "info")
             self.update_status(f"Building DB for {manufacturer}...")
+            # Prepare stop control and UI state
+            try:
+                if self.stop_db_build_event:
+                    self.stop_db_build_event.clear()
+                self.build_db_btn.config(state=tk.DISABLED)
+                if hasattr(self, 'stop_db_btn'):
+                    self.stop_db_btn.config(state=tk.NORMAL)
+            except Exception:
+                pass
             # Run the potentially long-running task in a separate thread
             thread = threading.Thread(target=self._build_db_worker, args=(manufacturer,), daemon=True)
+            self.db_build_thread = thread
             thread.start()
+
+    def stop_command_database(self):
+        """Signal the DB build worker to stop scraping and return control."""
+        try:
+            if self.stop_db_build_event and not self.stop_db_build_event.is_set():
+                self.stop_db_build_event.set()
+                self.log_to_terminal("Stop requested: halting command DB build.", "warn")
+                self.update_status("Stopping DB build…")
+        except Exception:
+            pass
 
     def _build_db_worker(self, manufacturer):
         """The actual worker function to query the AI and populate the DB."""
@@ -971,6 +1003,12 @@ class NetApp(tk.Tk):
                 if not tokens:
                     return
 
+                # Handle early stop
+                try:
+                    if self.stop_db_build_event and self.stop_db_build_event.is_set():
+                        return
+                except Exception:
+                    pass
                 visited = set()
                 max_depth = 4
                 queue = []
@@ -979,6 +1017,13 @@ class NetApp(tk.Tk):
                     queue.append(path)
 
                 while queue:
+                    # Check stop signal before exploring next branch
+                    try:
+                        if self.stop_db_build_event and self.stop_db_build_event.is_set():
+                            self.log_to_terminal("Stopping CLI '?' expansion…", "info")
+                            break
+                    except Exception:
+                        pass
                     path = queue.pop(0)
                     cmd_path = ' '.join(path)
                     # Avoid duplicate exploration
@@ -991,6 +1036,12 @@ class NetApp(tk.Tk):
                         # Ensure we are at the main starting view before each new exploration
                         try:
                             self._ensure_root_prompt(manuf)
+                        except Exception:
+                            pass
+                        # Stop check before executing device command
+                        try:
+                            if self.stop_db_build_event and self.stop_db_build_event.is_set():
+                                break
                         except Exception:
                             pass
                         help_out = self.run_device_command(f"{cmd_path} ?", timeout=8)
@@ -1031,12 +1082,26 @@ class NetApp(tk.Tk):
             try:
                 self.log_to_terminal("Starting CLI '?' expansion to build command tree...", "info")
                 self.update_status("Building DB: Expanding CLI commands...")
+                # Stop check before starting expansion
+                try:
+                    if self.stop_db_build_event and self.stop_db_build_event.is_set():
+                        raise Exception("Build stopped before CLI expansion")
+                except Exception:
+                    pass
                 _expand_cli_commands(manufacturer, available_text)
                 self.log_to_terminal("CLI command tree expansion complete.", "info")
             except Exception as e:
                 self.log_to_terminal(f"CLI expansion failed: {e}", "error")
 
             for category, question in topics.items():
+                # Stop check between categories
+                try:
+                    if self.stop_db_build_event and self.stop_db_build_event.is_set():
+                        self.update_status("Command DB build stopped.")
+                        self.log_to_terminal("DB build stopped before category queries.", "warn")
+                        break
+                except Exception:
+                    pass
                 full_request = f"For a {manufacturer} device, provide {question}"
                 self.log_to_terminal(f"Querying AI for category: {category}...", "info")
                 self.update_status(f"Building DB: Querying for {category}...")
@@ -1069,11 +1134,24 @@ class NetApp(tk.Tk):
                     self.log_to_terminal(f"Successfully retrieved knowledge for {category}.", "info")
                 else:
                     self.log_to_terminal(f"Failed to get guidance for {category}. Response: {guidance[0] if guidance else 'No response'}", "error")
-                
+                # Respect stop requests without lingering sleep
+                try:
+                    if self.stop_db_build_event and self.stop_db_build_event.is_set():
+                        break
+                except Exception:
+                    pass
                 time.sleep(5) # Add a small delay to avoid hitting API rate limits
 
             # If we have '?' commands fetched, ask AI to expand each with syntax/parameters/examples
             if available_text:
+                # Stop check before expansion request
+                try:
+                    if self.stop_db_build_event and self.stop_db_build_event.is_set():
+                        self.update_status("Command DB build stopped.")
+                        self.log_to_terminal("DB build stopped before '?' expansion.", "warn")
+                        raise Exception("Build stopped before '?' expansion")
+                except Exception:
+                    pass
                 self.log_to_terminal("Querying AI to expand '?' command list using web search...", "info")
                 self.update_status("Building DB: Expanding '?' commands...")
                 expand_request = (
@@ -1136,14 +1214,31 @@ class NetApp(tk.Tk):
                 self.log_to_terminal(f"Failed to append build summary to KB: {e}", "error")
 
             db_conn.commit()
-            self.log_to_terminal("Command database build finished and saved.", "info")
-            self.update_status("Command DB build finished.")
+            # Final status depending on stop state
+            try:
+                stopped = bool(self.stop_db_build_event and self.stop_db_build_event.is_set())
+            except Exception:
+                stopped = False
+            if stopped:
+                self.log_to_terminal("Command database build stopped by user.", "warn")
+                self.update_status("Command DB build stopped.")
+            else:
+                self.log_to_terminal("Command database build finished and saved.", "info")
+                self.update_status("Command DB build finished.")
         except Exception as e:
             self.log_to_terminal(f"Database build worker failed: {e}", "error")
             self.update_status("Command DB build failed.")
         finally:
             if db_conn:
                 db_conn.close()
+            # Restore UI buttons
+            try:
+                if hasattr(self, 'stop_db_btn'):
+                    self.stop_db_btn.config(state=tk.DISABLED)
+                if hasattr(self, 'build_db_btn'):
+                    self.build_db_btn.config(state=tk.NORMAL)
+            except Exception:
+                pass
 
     def import_cli_json(self):
         """Import CLI-related JSON and append data into cli_cache.db tables.

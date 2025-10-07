@@ -738,6 +738,12 @@ class NetApp(tk.Tk):
                 "Port-Channel": "a comprehensive guide to all common commands for configuring Link Aggregation Groups (LAGs) or Port-Channels."
             }
 
+            # Seed: expand fetched '?' commands using web search for comprehensive options
+            try:
+                available_text = self.available_commands_text.get('1.0', tk.END).strip()
+            except Exception:
+                available_text = ''
+
             for category, question in topics.items():
                 full_request = f"For a {manufacturer} device, provide {question}"
                 self.log_to_terminal(f"Querying AI for category: {category}...", "info")
@@ -749,6 +755,9 @@ class NetApp(tk.Tk):
                     self.model_entry.get(),
                     self.ver_entry.get(),
                     device_type=self.type_entry.get(),
+                    running_config=self.running_config_text.get('1.0', tk.END) if hasattr(self, 'running_config_text') else None,
+                    available_commands=available_text,
+                    use_web_search=True,
                     prompt_style='guidance'
                 )
 
@@ -771,6 +780,49 @@ class NetApp(tk.Tk):
                 
                 time.sleep(5) # Add a small delay to avoid hitting API rate limits
 
+            # If we have '?' commands fetched, ask AI to expand each with syntax/parameters/examples
+            if available_text:
+                self.log_to_terminal("Querying AI to expand '?' command list using web search...", "info")
+                self.update_status("Building DB: Expanding '?' commands...")
+                expand_request = (
+                    "Using the following available commands list captured from the device ('?'), "
+                    "expand each command with full syntax, parameters/options, common variations, and short examples. "
+                    "Group related commands and include cross-references."
+                )
+                guidance = self.ai_provider.get_commands(
+                    expand_request,
+                    manufacturer,
+                    self.model_entry.get(),
+                    self.ver_entry.get(),
+                    device_type=self.type_entry.get(),
+                    running_config=self.running_config_text.get('1.0', tk.END) if hasattr(self, 'running_config_text') else None,
+                    available_commands=available_text,
+                    use_web_search=True,
+                    prompt_style='guidance'
+                )
+                if guidance and not guidance[0].strip().startswith("# AI Error:"):
+                    guidance_text = "\n".join(guidance)
+                    cursor.execute(
+                        "SELECT id FROM command_knowledge WHERE manufacturer = ? AND category = ?",
+                        (manufacturer, "Available Commands Expanded")
+                    )
+                    if cursor.fetchone():
+                        cursor.execute(
+                            "UPDATE command_knowledge SET guidance_text = ?, timestamp = CURRENT_TIMESTAMP WHERE manufacturer = ? AND category = ?",
+                            (guidance_text, manufacturer, "Available Commands Expanded")
+                        )
+                    else:
+                        cursor.execute(
+                            "INSERT INTO command_knowledge (manufacturer, category, guidance_text) VALUES (?, ?, ?)",
+                            (manufacturer, "Available Commands Expanded", guidance_text)
+                        )
+                    self.log_to_terminal("Successfully expanded '?' commands and saved to KB.", "info")
+                else:
+                    self.log_to_terminal(
+                        f"Failed to expand '?' commands. Response: {guidance[0] if guidance else 'No response'}",
+                        "error"
+                    )
+
             # Append a build summary to Knowledge Base
             try:
                 model_val = self.model_entry.get().strip()
@@ -783,8 +835,7 @@ class NetApp(tk.Tk):
                     f"Version: {version_val}\n"
                     f"Profile: {profile_val}\n"
                     "Categories: VLANs, Interfaces, L3 and Routing, System Management, Port-Channel\n"
-                    "Status: Success"
-                )
+                ) + ("Included '?' command expansion\n" if available_text else "") + "Status: Success"
                 cursor.execute(
                     "INSERT INTO command_knowledge (manufacturer, category, guidance_text) VALUES (?, ?, ?)",
                     (manufacturer, "Build Summary", summary_text)

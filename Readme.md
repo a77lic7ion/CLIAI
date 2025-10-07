@@ -1,6 +1,6 @@
-Intelligent Network Manager with AI Assistant
+NetIntelli X
 🚀 Project Overview
-The Intelligent Network Manager with AI Assistant is a powerful Python-based desktop application designed to revolutionize network device conﬁguration and management. It integrates robust network automation capabilities with advanced Artiﬁcial Intelligence (AI) to streamline operations, reduce errors, and provide context-aware assistance to network engineers.
+NetIntelli X is a powerful Python-based desktop application designed to revolutionize network device configuration and management. It integrates robust network automation capabilities with advanced Artificial Intelligence (AI) to streamline operations, reduce errors, and provide context-aware assistance to network engineers.
 Leveraging Netmiko for secure SSH connectivity and popular Large Language Models (LLMs) like Google Gemini, OpenAI, and local Ollama models, this application allows users to generate and deploy vendor-speciﬁc CLI commands using natural language requests. It enhances eﬃciency by understanding the live running conﬁguration of devices, ensuring generated commands are accurate and contextually relevant.
 
 ✨ Key Features
@@ -20,7 +20,7 @@ Intuitive GUI: User-friendly interface built with Tkinter for ease of use.
 (Placeholder for future screenshots. You can add images here once the application is running.)
 
 ⚙ Installation
-To get started with the Intelligent Network Manager, follow these steps:
+To get started with NetIntelli X, follow these steps:
 
 Clone the Repository (or download the ﬁles)
 

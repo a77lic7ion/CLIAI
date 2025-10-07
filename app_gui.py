@@ -308,7 +308,7 @@ class AIProvider:
 class NetApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Intelligent Network Manager")
+        self.title("NetIntelli X")
         self.geometry("1000x800")
 
         self.connection = None
@@ -346,7 +346,7 @@ class NetApp(tk.Tk):
         tk.Label(conn_frame, text="Baud:").grid(row=1, column=3, padx=5, pady=5, sticky="w")
         self.baud_combo = ttk.Combobox(conn_frame, state="readonly", values=["9600","19200","38400","57600","115200"], width=8)
         self.baud_combo.grid(row=1, column=4, padx=5, pady=5, sticky="w")
-        self.baud_combo.set("115200")
+        self.baud_combo.set("9600")
         # Populate COM ports now that the combobox exists
         self.refresh_com_ports()
         tk.Label(conn_frame, text="Username:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
@@ -379,6 +379,17 @@ class NetApp(tk.Tk):
         # Direct input: type into terminal window and press Enter to send
         self._setup_direct_terminal_input()
         self._show_prompt()
+
+        # Inline terminal input controls
+        term_input_frame = tk.Frame(terminal_frame)
+        term_input_frame.pack(fill="x", padx=10, pady=6)
+        try:
+            self.term_input = tk.Entry(term_input_frame, font=("Consolas", 10))
+            self.term_input.pack(side=tk.LEFT, fill="x", expand=True)
+            tk.Button(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=6)
+            tk.Button(term_input_frame, text="Send RETURN", command=self.send_enter_key).pack(side=tk.LEFT, padx=6)
+        except Exception:
+            pass
 
         # Make Push-to-Device accessible near the terminal as well
         term_actions = tk.Frame(terminal_frame)
@@ -436,6 +447,7 @@ class NetApp(tk.Tk):
         tk.Checkbutton(terminal_opts_frame, text="Auto-pager", variable=self.auto_pager_var).grid(row=1, column=0, sticky="w", padx=5, pady=2)
         tk.Button(terminal_opts_frame, text="Next Page", command=self.send_pager_next).grid(row=1, column=1, sticky="w", padx=5, pady=2)
         tk.Button(terminal_opts_frame, text="Stop Paging", command=self.send_pager_stop).grid(row=1, column=2, sticky="w", padx=5, pady=2)
+        tk.Button(terminal_opts_frame, text="Disable Paging", command=self.disable_paging).grid(row=1, column=3, sticky="w", padx=5, pady=2)
         self.fix_command_btn = tk.Button(terminal_opts_frame, text="Fix with AI", command=self.ai_fix_last_command, state=tk.DISABLED)
         self.fix_command_btn.grid(row=2, column=0, sticky="w", padx=5, pady=5)
         tk.Button(terminal_opts_frame, text="Clear", command=self.clear_terminal).grid(row=2, column=1, sticky="w", padx=5, pady=5)
@@ -476,6 +488,8 @@ class NetApp(tk.Tk):
         self.build_db_btn.grid(row=4, column=1, pady=5, sticky="ew")
         self.view_kb_btn = tk.Button(context_frame, text="View KB", command=self.show_knowledge_base_window)
         self.view_kb_btn.grid(row=4, column=2, pady=5, sticky="ew")
+        self.import_json_btn = tk.Button(context_frame, text="Import CLI JSON", command=self.import_cli_json)
+        self.import_json_btn.grid(row=4, column=3, pady=5, sticky="ew")
 
         context_frame.columnconfigure(1, weight=1)
         context_frame.columnconfigure(2, weight=1)
@@ -700,6 +714,106 @@ class NetApp(tk.Tk):
         finally:
             if db_conn:
                 db_conn.close()
+
+    def import_cli_json(self):
+        """Import CLI-related JSON and append data into cli_cache.db tables.
+        Supports keys: command_corrections, command_knowledge, generated_commands.
+        If a list is provided at top-level, it is treated as corrections.
+        """
+        try:
+            filepath = filedialog.askopenfilename(title="Select CLI JSON", filetypes=[("JSON files", "*.json")])
+            if not filepath:
+                return
+
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            if not self.db_conn:
+                self._init_db()
+
+            cursor = self.db_conn.cursor()
+            imported_corrections = 0
+            imported_kb = 0
+            imported_generated = 0
+
+            # Normalize structures
+            if isinstance(data, dict):
+                corrections = data.get('command_corrections') or data.get('corrections') or []
+                knowledge = data.get('command_knowledge') or data.get('knowledge') or []
+                generated = data.get('generated_commands') or data.get('generated') or []
+            elif isinstance(data, list):
+                corrections = data
+                knowledge = []
+                generated = []
+            else:
+                messagebox.showerror("Import Error", "Unsupported JSON structure.")
+                return
+
+            # Corrections
+            for item in corrections or []:
+                if not isinstance(item, dict):
+                    continue
+                manufacturer = (item.get('manufacturer') or self.man_entry.get() or '').strip()
+                device_type = (item.get('device_type') or self.type_entry.get() or '').strip()
+                incorrect = item.get('incorrect_command') or item.get('incorrect') or item.get('bad')
+                corrected = item.get('corrected_command') or item.get('correct') or item.get('fix')
+                if manufacturer and incorrect and corrected:
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO command_corrections (manufacturer, device_type, incorrect_command, corrected_command) VALUES (?, ?, ?, ?)",
+                        (manufacturer, device_type, incorrect, corrected)
+                    )
+                    imported_corrections += 1
+
+            # Knowledge entries
+            for item in knowledge or []:
+                if not isinstance(item, dict):
+                    continue
+                manufacturer = (item.get('manufacturer') or self.man_entry.get() or '').strip()
+                category = (item.get('category') or '').strip()
+                guidance = item.get('guidance_text') or item.get('guidance') or item.get('text') or ''
+                guidance_text = "\n".join(guidance) if isinstance(guidance, list) else str(guidance)
+                if manufacturer and category and guidance_text:
+                    cursor.execute("SELECT id FROM command_knowledge WHERE manufacturer = ? AND category = ?", (manufacturer, category))
+                    if cursor.fetchone():
+                        cursor.execute(
+                            "UPDATE command_knowledge SET guidance_text = ?, timestamp = CURRENT_TIMESTAMP WHERE manufacturer = ? AND category = ?",
+                            (guidance_text, manufacturer, category)
+                        )
+                    else:
+                        cursor.execute(
+                            "INSERT INTO command_knowledge (manufacturer, category, guidance_text) VALUES (?, ?, ?)",
+                            (manufacturer, category, guidance_text)
+                        )
+                    imported_kb += 1
+
+            # Generated command sets
+            for item in generated or []:
+                if not isinstance(item, dict):
+                    continue
+                manufacturer = (item.get('manufacturer') or self.man_entry.get() or '').strip()
+                request = item.get('user_request') or item.get('request') or ''
+                cmds = item.get('generated_commands') or item.get('commands') or ''
+                cmds_text = "\n".join(cmds) if isinstance(cmds, list) else str(cmds)
+                if manufacturer and request and cmds_text:
+                    cursor.execute(
+                        "INSERT INTO generated_commands (manufacturer, user_request, generated_commands) VALUES (?, ?, ?)",
+                        (manufacturer, request, cmds_text)
+                    )
+                    imported_generated += 1
+
+            self.db_conn.commit()
+            summary = f"Imported {imported_corrections} corrections, {imported_kb} knowledge entries, {imported_generated} generated sets from {os.path.basename(filepath)}"
+            self.log_to_terminal(summary, "info")
+            try:
+                messagebox.showinfo("Import Complete", summary)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                messagebox.showerror("Import Error", f"Failed to import JSON: {e}")
+            except Exception:
+                pass
+            self.log_to_terminal(f"Failed to import JSON: {e}", "error")
 
     def update_status(self, message):
         self.status_var.set(message)
@@ -1157,12 +1271,54 @@ class NetApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send ENTER: {e}")
 
+    def disable_paging(self):
+        """Disable terminal paging for the current vendor/session."""
+        if not self.connection or not getattr(self, 'is_connected', False):
+            messagebox.showerror("Error", "Not connected to any device.")
+            return
+        vendor = (self.man_entry.get() or '').strip().lower()
+        # Choose vendor-specific commands to disable paging
+        commands = []
+        if vendor.startswith('h3c') or vendor == 'hp' or vendor == 'hp_comware':
+            commands = ['screen-length disable']
+        elif vendor.startswith('cisco') or vendor == 'ios':
+            commands = ['terminal length 0']
+        elif vendor.startswith('arista'):
+            commands = ['terminal length 0']
+        elif vendor.startswith('juniper'):
+            commands = ['set cli screen-length 0']
+        else:
+            # Safe default commonly supported
+            commands = ['terminal length 0']
+
+        self._pause_serial_reader()
+        try:
+            for c in commands:
+                self.log_to_terminal(f"\n> {c}", "command")
+                self.connection.write((c + '\r\n').encode())
+                out = ""
+                start = time.time()
+                pager_re = re.compile(r"\s*-{2,}\s*More\s*-{2,}\s*|--More--|----\s*More\s*----", re.IGNORECASE)
+                while time.time() - start < 3:
+                    if self.connection.in_waiting > 0:
+                        chunk = self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
+                        out += chunk
+                        if pager_re.search(out):
+                            self.connection.write(b' ')
+                            out = pager_re.sub('', out)
+                            start = time.time()
+                    time.sleep(0.1)
+                if out:
+                    self.log_to_terminal(out, 'output')
+        finally:
+            self._resume_serial_reader()
+
     def connect(self):
         com_port = self.com_port_combo.get()
         try:
-            baudrate = int(self.baud_combo.get()) if hasattr(self, 'baud_combo') and self.baud_combo.get() else 115200
+            baudrate = int(self.baud_combo.get()) if hasattr(self, 'baud_combo') and self.baud_combo.get() else 9600
         except Exception:
-            baudrate = 115200
+            baudrate = 9600
         username = self.user_entry.get()
         password = self.pass_entry.get()
         
@@ -1719,25 +1875,52 @@ class NetApp(tk.Tk):
             messagebox.showerror("Input Error", "Manufacturer is required to fetch device info.")
             return
 
-        # Determine the correct command
-        if manufacturer == 'h3c':
-            cmd = 'display version'
-        else:
-            # A common default for many vendors like Cisco, Juniper, Arista
-            cmd = 'show version'
-
-        self.log_to_terminal(f"\n>>> Fetching device info with '{cmd}'...", "info")
-        # Track attempts to allow fallback commands
-        self.device_info_attempt = 1
-
         # Clear old info
         self.model_entry.delete(0, tk.END)
         self.ver_entry.delete(0, tk.END)
 
-        # Send the command
+        # H3C-specific flow: send RETURN first, detect mode, then run manuinfo
+        if manufacturer == 'h3c':
+            try:
+                self.log_to_terminal("\n>>> H3C detected: sending ENTER to refresh prompt...", "info")
+                self.send_enter_key()
+                # Small delay to allow prompt to render, then detect mode
+                def detect_and_run():
+                    try:
+                        last_line = self.terminal.get("end-2l", "end-1l").strip()
+                        mode = "Unknown"
+                        if last_line.startswith('[') and last_line.endswith(']'):
+                            mode = "System View"
+                        elif last_line.startswith('<') and last_line.endswith('>'):
+                            mode = "User View"
+                        self.log_to_terminal(f"Detected prompt mode: {mode}", "info")
+                    except Exception:
+                        pass
+
+                    cmd = 'display device manuinfo'
+                    self.log_to_terminal(f"\n>>> Fetching device info with '{cmd}'...", "info")
+                    self.device_info_attempt = 1
+                    # Send and then parse after a short delay
+                    try:
+                        self.connection.write((cmd + '\r\n').encode())
+                        self.update_status("Fetching device info... please wait 3 seconds.")
+                        self.after(3000, lambda: self.parse_device_info(cmd))
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Failed to send command: {e}")
+                        self.log_to_terminal(f"\n[Send error] {e}\n", "error")
+                        self.update_status("Error fetching device info.")
+
+                self.after(400, detect_and_run)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to prepare H3C prompt: {e}")
+                self.update_status("Error preparing H3C prompt.")
+            return
+
+        # Non-H3C vendors: use typical version commands
+        cmd = 'show version'
+        self.log_to_terminal(f"\n>>> Fetching device info with '{cmd}'...", "info")
+        self.device_info_attempt = 1
         try:
-            # The response will be read by the async serial reader and appended to the terminal.
-            # We schedule a parsing function to run after a delay to capture the output.
             self.connection.write((cmd + '\r\n').encode())
             self.update_status("Fetching device info... please wait 3 seconds.")
             self.after(3000, lambda: self.parse_device_info(cmd))
@@ -1765,6 +1948,35 @@ class NetApp(tk.Tk):
 
         manufacturer = self.man_entry.get().lower().strip()
         model, version = "", ""
+
+        # Special handling for H3C 'display device manuinfo' which reports device name
+        if manufacturer == 'h3c' and 'display device manuinfo' in command_sent.lower():
+            name_match = re.search(r"DEVICE_NAME\s*[:=]\s*([^\n]+)", relevant_output, re.IGNORECASE)
+            if name_match:
+                model = name_match.group(1).strip()
+            vendor_match = re.search(r"VENDOR_NAME\s*[:=]\s*([^\n]+)", relevant_output, re.IGNORECASE)
+            if vendor_match:
+                try:
+                    self.man_entry.delete(0, tk.END)
+                    self.man_entry.insert(0, vendor_match.group(1).strip())
+                except Exception:
+                    pass
+            # manuinfo doesn't include software version; follow up with 'display version'
+            if not model or not version:
+                if getattr(self, 'device_info_attempt', 1) < 3:
+                    try:
+                        self.connection.write(('display version\r\n').encode())
+                        self.device_info_attempt = 3
+                        # If we already parsed model, reflect it immediately
+                        if model:
+                            self.model_entry.delete(0, tk.END)
+                            self.model_entry.insert(0, model)
+                            self.log_to_terminal(f"Found Model: {model}", "info")
+                        self.update_status("Fetching version... please wait 3 seconds.")
+                        self.after(3000, lambda: self.parse_device_info('display version'))
+                        return
+                    except Exception as e:
+                        self.log_to_terminal(f"Follow-up version fetch failed: {e}", "error")
 
         # --- Regex patterns for parsing ---
         patterns = {
@@ -1921,9 +2133,16 @@ class NetApp(tk.Tk):
                 
                 response = ""
                 start_time = time.time()
+                pager_re = re.compile(r"\s*-{2,}\s*More\s*-{2,}\s*|--More--|----\s*More\s*----", re.IGNORECASE)
                 while time.time() - start_time < 3:
                     if self.connection.in_waiting > 0:
-                        response += self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
+                        chunk = self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
+                        response += chunk
+                        if pager_re.search(response):
+                            # advance pager
+                            self.connection.write(b' ')
+                            response = pager_re.sub('', response)
+                            start_time = time.time()
                     time.sleep(0.1)
                 
                 if response:
@@ -1950,9 +2169,15 @@ class NetApp(tk.Tk):
                         self.connection.write((fix_cmd + '\r\n').encode())
                         fix_response = ""
                         fix_start_time = time.time()
+                        pager_re2 = re.compile(r"\s*-{2,}\s*More\s*-{2,}\s*|--More--|----\s*More\s*----", re.IGNORECASE)
                         while time.time() - fix_start_time < 3:
                             if self.connection.in_waiting > 0:
-                                fix_response += self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
+                                chunk2 = self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
+                                fix_response += chunk2
+                                if pager_re2.search(fix_response):
+                                    self.connection.write(b' ')
+                                    fix_response = pager_re2.sub('', fix_response)
+                                    fix_start_time = time.time()
                             time.sleep(0.1)
                         
                         if fix_response:
@@ -2073,6 +2298,16 @@ class NetApp(tk.Tk):
             self.type_entry.delete(0, tk.END); self.type_entry.insert(0, profile.get('device_type', ''))
             self.model_entry.delete(0, tk.END); self.model_entry.insert(0, profile.get('model', ''))
             self.ver_entry.delete(0, tk.END); self.ver_entry.insert(0, profile.get('version', ''))
+            try:
+                self.running_config_text.delete('1.0', tk.END)
+                self.running_config_text.insert(tk.END, profile.get('running_config', ''))
+            except Exception:
+                pass
+            try:
+                self.available_commands_text.delete('1.0', tk.END)
+                self.available_commands_text.insert(tk.END, profile.get('available_commands', ''))
+            except Exception:
+                pass
             self.update_status(f"Loaded profile: {profile_name}")
 
     def save_profile(self):
@@ -2086,7 +2321,9 @@ class NetApp(tk.Tk):
                 'manufacturer': self.man_entry.get(),
                 'device_type': self.type_entry.get(),
                 'model': self.model_entry.get(),
-                'version': self.ver_entry.get()
+                'version': self.ver_entry.get(),
+                'running_config': self.running_config_text.get('1.0', tk.END),
+                'available_commands': self.available_commands_text.get('1.0', tk.END)
             }
             with open(self.profiles_file, 'w') as f:
                 json.dump(self.profiles, f, indent=4)
@@ -2109,7 +2346,9 @@ class NetApp(tk.Tk):
                 'manufacturer': self.man_entry.get(),
                 'device_type': self.type_entry.get(),
                 'model': self.model_entry.get(),
-                'version': self.ver_entry.get()
+                'version': self.ver_entry.get(),
+                'running_config': self.running_config_text.get('1.0', tk.END),
+                'available_commands': self.available_commands_text.get('1.0', tk.END)
             }
             with open(self.profiles_file, 'w') as f:
                 json.dump(self.profiles, f, indent=4)

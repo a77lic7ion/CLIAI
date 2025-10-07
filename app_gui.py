@@ -533,6 +533,9 @@ class NetApp(tk.Tk):
         self.running_config_text.pack(pady=5, expand=True, fill="both")
         self.fetch_q_btn = tk.Button(chat_context_frame, text="Fetch '?' Commands for AI Context", command=self.fetch_available_commands)
         self.fetch_q_btn.pack(pady=5, fill="x")
+        # Option to append fetched '?' output to the CLI command DB
+        self.append_available_to_db_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(chat_context_frame, text="Append '?' output to CLI DB", variable=self.append_available_to_db_var).pack(pady=2, anchor='w')
         # Larger '?' commands viewer as well
         self.available_commands_text = scrolledtext.ScrolledText(chat_context_frame, wrap=tk.WORD, height=8, font=("Consolas", 9))
         self.available_commands_text.pack(pady=5, expand=True, fill="both")
@@ -600,11 +603,36 @@ class NetApp(tk.Tk):
                     corrected_command TEXT NOT NULL
                 )
             ''')
+            # Cache for available commands ('?' output), appended by user
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS available_commands_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    manufacturer TEXT NOT NULL,
+                    context TEXT,
+                    commands_text TEXT NOT NULL
+                )
+            ''')
             self.db_conn.commit()
             self.log_to_terminal("Local command cache database initialized.", "info")
         except Exception as e:
             self.db_conn = None
             self.log_to_terminal(f"Error initializing database: {e}", "error")
+
+    def _save_available_commands_to_db(self, manufacturer, context, commands_text):
+        """Append '?' available commands output to local DB for future AI context."""
+        if not self.db_conn or not manufacturer or not commands_text:
+            return
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute(
+                "INSERT INTO available_commands_cache (manufacturer, context, commands_text) VALUES (?, ?, ?)",
+                (manufacturer, context or '', commands_text)
+            )
+            self.db_conn.commit()
+            self.log_to_terminal("Available commands appended to CLI DB.", "info")
+        except Exception as e:
+            self.log_to_terminal(f"Failed to save available commands: {e}", "error")
 
     def _save_commands_to_db(self, manufacturer, request, commands):
         """Save a generated command set to the database."""
@@ -1947,6 +1975,29 @@ class NetApp(tk.Tk):
 
         # Change request: generate commands with AI
         self.set_busy(True, "Generating commands via AI…")
+        # Helper: get available commands from editor or DB fallback
+        def _get_available_commands_context_for_ai():
+            try:
+                text = self.available_commands_text.get('1.0', tk.END).strip()
+            except Exception:
+                text = ''
+            if text:
+                return text
+            # Fallback: latest cached available commands for this manufacturer
+            try:
+                if self.db_conn:
+                    cursor = self.db_conn.cursor()
+                    cursor.execute(
+                        "SELECT commands_text FROM available_commands_cache WHERE manufacturer = ? ORDER BY timestamp DESC LIMIT 1",
+                        (manufacturer,)
+                    )
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        return row[0]
+            except Exception:
+                pass
+            return ''
+
         commands = self.ai_provider.get_commands(
             text,
             manufacturer,
@@ -1954,6 +2005,7 @@ class NetApp(tk.Tk):
             self.ver_entry.get(),
             device_type=self.type_entry.get(),
             running_config=self.running_config_text.get('1.0', tk.END),
+            available_commands=_get_available_commands_context_for_ai(),
             use_web_search=self.use_web_search_var.get(),
             ollama_model=self.ollama_model_combo.get(),
             gemini_model=self.get_selected_gemini_model_full(),
@@ -1975,6 +2027,7 @@ class NetApp(tk.Tk):
                 self.ver_entry.get(),
                 device_type=self.type_entry.get(),
                 running_config=self.running_config_text.get('1.0', tk.END),
+                available_commands=_get_available_commands_context_for_ai(),
                 use_web_search=self.use_web_search_var.get(),
                 ollama_model=self.ollama_model_combo.get(),
                 gemini_model=self.get_selected_gemini_model_full(),
@@ -2068,6 +2121,15 @@ class NetApp(tk.Tk):
             elif last_line.startswith('<') and last_line.endswith('>'):
                 category += " - User View"
             
+            # Append to CLI DB if opted-in
+            try:
+                if getattr(self, 'append_available_to_db_var', None) and self.append_available_to_db_var.get():
+                    self._save_available_commands_to_db(self.man_entry.get(), category, commands_output)
+                    self.update_status("Appended '?' output to CLI DB")
+            except Exception as e:
+                self.log_to_terminal(f"Append to DB failed: {e}", "error")
+
+            # Also save into Knowledge Base for quick lookup
             self._save_knowledge_to_db(self.man_entry.get(), category, commands_output.split('\n'))
 
         except Exception as e:
@@ -2085,11 +2147,54 @@ class NetApp(tk.Tk):
                     pass
                 return
 
+            # Determine suggested filename from device hostname/sysname
+            def _extract_hostname_from_config(cfg_text):
+                try:
+                    for line in cfg_text.splitlines()[:200]:
+                        m = re.search(r"^\s*(hostname|sysname)\s+([A-Za-z0-9._-]+)", line, re.IGNORECASE)
+                        if m:
+                            return m.group(2).strip()
+                    m = re.search(r"host-?name\s+([A-Za-z0-9._-]+)", cfg_text, re.IGNORECASE)
+                    if m:
+                        return m.group(1).strip()
+                except Exception:
+                    pass
+                return ""
+
+            def _extract_hostname_from_prompt():
+                try:
+                    last_line = self.terminal.get("end-2l", "end-1l").strip()
+                    if last_line.startswith('[') and last_line.endswith(']'):
+                        return last_line.strip('[]').strip()
+                    if last_line.startswith('<') and last_line.endswith('>'):
+                        return last_line.strip('<>').strip()
+                    m = re.search(r"([A-Za-z0-9._-]+)\s*[#>]\s*$", last_line)
+                    if m:
+                        return m.group(1)
+                except Exception:
+                    pass
+                return ""
+
+            def _sanitize_filename(name):
+                try:
+                    name = (name or "").strip()
+                    if not name:
+                        return ""
+                    name = re.sub(r"[<>:\"/\\|?*]", "", name)
+                    name = name.strip('. ')
+                    return name
+                except Exception:
+                    return ""
+
+            hostname = _extract_hostname_from_config(text) or _extract_hostname_from_prompt()
+            hostname = _sanitize_filename(hostname)
+            suggested_filename = f"{hostname}.txt" if hostname else "running-config.txt"
+
             path = filedialog.asksaveasfilename(
                 title="Save Running Config",
                 defaultextension=".txt",
                 filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
-                initialfile="running-config.txt"
+                initialfile=suggested_filename
             )
             if not path:
                 return

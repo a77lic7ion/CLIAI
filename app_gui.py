@@ -144,13 +144,12 @@ class AIProvider:
             4.  **NO MARKDOWN:** Do not use markdown code blocks (```).
             5.  **ONE COMMAND PER LINE:** Each command must be on a new line.
             6.  **HANDLE AMBIGUITY:** If the request is unclear or cannot be fulfilled, return a single line starting with '# AI Error:' followed by a brief explanation.
+            7.  **ASSUME PRIVILEGED MODE:** The session is already in privileged mode. Do not include mode-entry commands like 'enable' (Cisco) or 'system-view' (H3C). Generate only the operational/configuration commands required.
 
             **Example for H3C:**
             User Request: create vlan 100
             Correct Response:
-            system-view
             vlan 100
-            quit
 
             **Example for Cisco:**
             User Request: create vlan 100
@@ -355,6 +354,9 @@ class NetApp(tk.Tk):
         tk.Label(conn_frame, text="Password:").grid(row=2, column=2, padx=5, pady=5, sticky="w")
         self.pass_entry = tk.Entry(conn_frame, show="*")
         self.pass_entry.grid(row=2, column=3, padx=5, pady=5, sticky="ew")
+        # Manual login helper: autofill username/password and send to CLI
+        self.auto_login_btn = tk.Button(conn_frame, text="Autofill & Send to CLI", command=self.autofill_send_to_cli)
+        self.auto_login_btn.grid(row=2, column=4, padx=5, pady=5, sticky="ew")
 
         tk.Label(conn_frame, text="Enable Pass:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
         self.enable_pass_entry = tk.Entry(conn_frame, show="*")
@@ -496,16 +498,8 @@ class NetApp(tk.Tk):
 
         ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
 
-        self.fetch_config_btn = tk.Button(ai_assistant_frame, text="Fetch Running Config for AI Context", command=self.fetch_running_config)
-        self.fetch_config_btn.pack(pady=5, padx=10, fill="x")
-        self.running_config_text = scrolledtext.ScrolledText(ai_assistant_frame, wrap=tk.WORD, height=8, font=("Consolas", 9))
-        self.running_config_text.pack(pady=5, padx=10, expand=True, fill="both")
-
-        self.fetch_q_btn = tk.Button(ai_assistant_frame, text="Fetch '?' Commands for AI Context", command=self.fetch_available_commands)
-        self.fetch_q_btn.pack(pady=5, padx=10, fill="x")
-        self.available_commands_text = scrolledtext.ScrolledText(ai_assistant_frame, wrap=tk.WORD, height=6, font=("Consolas", 9))
-        self.available_commands_text.pack(pady=5, padx=10, expand=True, fill="both")
-
+        # (Fetch Running Config moved to Chat pane)
+        # (Moved context panes to Chat window above)
         ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
         tk.Label(ai_assistant_frame, text="Your Request:").pack(pady=5, padx=10, anchor="w")
         self.ai_input = tk.Entry(ai_assistant_frame, font=("Arial", 10))
@@ -523,7 +517,20 @@ class NetApp(tk.Tk):
         # Chat pane: ask questions, get backend answers, and generate commands for changes
         chat_frame = tk.LabelFrame(right_split, text="Chat", relief=tk.GROOVE)
         right_split.add(chat_frame, minsize=300)
-        self.chat_log = scrolledtext.ScrolledText(chat_frame, wrap=tk.WORD, height=12, font=("Consolas", 10))
+        # Context fetchers above the chat window
+        chat_context_frame = tk.Frame(chat_frame)
+        chat_context_frame.pack(pady=5, padx=10, fill='x')
+        self.fetch_config_btn = tk.Button(chat_context_frame, text="Fetch Running Config for AI Context", command=self.fetch_running_config)
+        self.fetch_config_btn.pack(pady=5, fill="x")
+        self.running_config_text = scrolledtext.ScrolledText(chat_context_frame, wrap=tk.WORD, height=6, font=("Consolas", 9))
+        self.running_config_text.pack(pady=5, expand=True, fill="both")
+        self.fetch_q_btn = tk.Button(chat_context_frame, text="Fetch '?' Commands for AI Context", command=self.fetch_available_commands)
+        self.fetch_q_btn.pack(pady=5, fill="x")
+        self.available_commands_text = scrolledtext.ScrolledText(chat_context_frame, wrap=tk.WORD, height=4, font=("Consolas", 9))
+        self.available_commands_text.pack(pady=5, expand=True, fill="both")
+
+        # Halve the chat agent window height by giving room to context panes
+        self.chat_log = scrolledtext.ScrolledText(chat_frame, wrap=tk.WORD, height=6, font=("Consolas", 10))
         self.chat_log.pack(pady=6, padx=10, expand=True, fill="both")
         chat_input_frame = tk.Frame(chat_frame)
         chat_input_frame.pack(fill="x", padx=10, pady=6)
@@ -540,6 +547,9 @@ class NetApp(tk.Tk):
         self.status_var = tk.StringVar()
         self.status_bar = tk.Label(self, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # --- Busy Overlay (progress/thinking indicator) ---
+        self._create_busy_overlay()
         
         self.load_profiles()
         self.on_ai_provider_change()
@@ -819,6 +829,46 @@ class NetApp(tk.Tk):
         self.status_var.set(message)
         self.update_idletasks()
 
+    def _create_busy_overlay(self):
+        try:
+            self.busy_var = tk.StringVar(value="Working…")
+            self.busy_frame = tk.Frame(self, bg="#000000", highlightthickness=0)
+            # Inner panel
+            inner = tk.Frame(self.busy_frame, bg="#222222", bd=2, relief=tk.RIDGE)
+            inner.place(relx=0.5, rely=0.5, anchor="center")
+            tk.Label(inner, textvariable=self.busy_var, fg="white", bg="#222222", font=("Arial", 10, "bold")).pack(padx=20, pady=(20, 10))
+            self.busy_bar = ttk.Progressbar(inner, mode="indeterminate", length=220)
+            self.busy_bar.pack(padx=20, pady=(0, 20))
+            # Hidden by default
+            self.busy_frame.place_forget()
+        except Exception:
+            # If overlay cannot be created, fail silently
+            self.busy_frame = None
+            self.busy_bar = None
+
+    def set_busy(self, is_busy=True, message=None):
+        """Show/Hide an overlay with an indeterminate progress bar.
+        Also updates the status message if provided.
+        """
+        try:
+            if message:
+                self.busy_var.set(message)
+                self.update_status(message)
+            if is_busy:
+                if self.busy_frame:
+                    self.busy_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+                    self.busy_frame.lift()
+                if self.busy_bar:
+                    self.busy_bar.start(10)
+            else:
+                if self.busy_bar:
+                    self.busy_bar.stop()
+                if self.busy_frame:
+                    self.busy_frame.place_forget()
+            self.update_idletasks()
+        except Exception:
+            pass
+
     def on_ai_provider_change(self, event=None):
         provider = self.ai_provider_combo.get()
         self.api_key_entry.config(state=tk.NORMAL if provider in ["Gemini", "OpenAI", "Mistral", "Claude"] else tk.DISABLED)
@@ -839,7 +889,7 @@ class NetApp(tk.Tk):
 
     def fetch_ollama_models(self):
         self.log_to_terminal("Fetching Ollama models...", "info")
-        self.update_status("Fetching Ollama models...")
+        self.set_busy(True, "Fetching Ollama models…")
         try:
             response = requests.get("http://localhost:11434/api/tags", timeout=3 )
             response.raise_for_status()
@@ -868,6 +918,8 @@ class NetApp(tk.Tk):
             self.update_status("Error fetching Ollama models.")
             self.ollama_model_combo['values'] = ["Error fetching models"]
             self.ollama_model_combo.set("Error fetching models")
+        finally:
+            self.set_busy(False)
 
     def refresh_com_ports(self):
         """Refresh the list of available COM ports"""
@@ -1271,6 +1323,62 @@ class NetApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send ENTER: {e}")
 
+    def autofill_send_to_cli(self):
+        """Send username and password to the device, each followed by RETURN.
+
+        This provides a manual login option when auto-login did not succeed.
+        """
+        try:
+            if not self.connection or not getattr(self, 'is_connected', False):
+                messagebox.showerror("Error", "Not connected to any device.")
+                return
+
+            username = ''
+            password = ''
+            try:
+                username = (self.user_entry.get() or '').strip()
+            except Exception:
+                username = ''
+            try:
+                password = (self.pass_entry.get() or '')
+            except Exception:
+                password = ''
+
+            if not username and not password:
+                messagebox.showinfo("Missing Credentials", "Please enter a username and/or password.")
+                return
+
+            # Informational log without exposing the password
+            self.log_to_terminal("[manual-login] Sending username and password to device...", "info")
+
+            # Send username then password, each with CRLF
+            try:
+                if username:
+                    self.connection.write((username + '\r\n').encode())
+                else:
+                    # If username is empty, at least send a RETURN to advance
+                    self.connection.write(b'\r\n')
+            except Exception as e:
+                self.log_to_terminal(f"[Send error] Username send failed: {e}", "error")
+
+            # Wait for device to present Password prompt (some devices are slow)
+            try:
+                time.sleep(3.0)
+            except Exception:
+                pass
+
+            try:
+                if password:
+                    self.connection.write((password + '\r\n').encode())
+                else:
+                    # Send RETURN even if no password to proceed on devices without passwords
+                    self.connection.write(b'\r\n')
+            except Exception as e:
+                self.log_to_terminal(f"[Send error] Password send failed: {e}", "error")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send credentials: {e}")
+
     def disable_paging(self):
         """Disable terminal paging for the current vendor/session."""
         if not self.connection or not getattr(self, 'is_connected', False):
@@ -1586,23 +1694,25 @@ class NetApp(tk.Tk):
             self.log_to_terminal(f"Failed to query local corrections DB: {e}", "error")
 
         # 2. If not in local DB, try AI
-        self.update_status(f"Asking AI for correction for: {failed_cmd}...")
+        self.set_busy(True, f"Asking AI for correction for: {failed_cmd}...")
         request_with_error = f"{failed_cmd}ERR_SEPARATOR{error_msg or 'Unknown error'}"
         corrected_commands = self.ai_provider.get_commands(
             request_with_error, manufacturer, self.model_entry.get(), self.ver_entry.get(),
             device_type=device_type, running_config=self.running_config_text.get('1.0', tk.END),
             prompt_style='fix_command'
         )
+        self.set_busy(False)
 
         # If AI can't find a specific fix, ask for general guidance instead
         if corrected_commands and corrected_commands[0].strip().startswith("# AI Error: Unable to determine correction"):
-            self.update_status("No specific fix found, asking for general guidance...")
+            self.set_busy(True, "No specific fix found, asking for guidance…")
             guidance_request = f"The command '{failed_cmd}' was incomplete or ambiguous. What are the possible valid commands that could follow it on a {manufacturer} {device_type} device? Provide a brief guide with examples."
             guidance = self.ai_provider.get_commands(
                 guidance_request, manufacturer, self.model_entry.get(), self.ver_entry.get(),
                 device_type=device_type, running_config=self.running_config_text.get('1.0', tk.END),
                 prompt_style='guidance'
             )
+            self.set_busy(False)
             return guidance
         
         return corrected_commands
@@ -1634,23 +1744,96 @@ class NetApp(tk.Tk):
         self.fix_command_btn.config(state=tk.DISABLED)
 
     def run_precheck(self):
-        """Run precheck for serial connection - simplified for COM port usage"""
+        """Run precheck for serial connection and auto-login using GUI credentials.
+
+        - Wakes the line with ENTER.
+        - Detects common login prompts (Login/Username/User name).
+        - Sends username and password automatically if provided.
+        - Avoids echoing the password to the terminal.
+        """
         self.log_to_terminal("\nRunning pre-check to identify device...", "info")
-        
+        self.set_busy(True, "Running pre-check…")
+        self.update_idletasks()
+
+        username = (getattr(self, 'user_entry', None).get() if hasattr(self, 'user_entry') else '').strip()
+        password = getattr(self, 'pass_entry', None).get() if hasattr(self, 'pass_entry') else ''
+
+        # Helper regexes for prompts
+        login_re = re.compile(r"(^|\n)\s*(login|username|user name|user)\s*:", re.IGNORECASE)
+        pass_re = re.compile(r"(^|\n)\s*password\s*:", re.IGNORECASE)
+        press_enter_re = re.compile(r"press\s+(enter|return)\s+to\s+get\s+started", re.IGNORECASE)
+
+        sent_user = False
+        sent_pass = False
+
         try:
-            # Send a simple command to test the connection
-            self.connection.write(b'\r\n')
-            time.sleep(0.5)
-            
-            # Try to read any response
-            if self.connection.in_waiting > 0:
-                response = self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
-                self.log_to_terminal(f"Device response: {response}", "info")
-            else:
+            # Wake the line
+            try:
+                self.connection.write(b"\r\n")
+            except Exception:
+                pass
+
+            start = time.time()
+            buffer = ""
+            # Read/respond loop (pre-reader-thread)
+            while time.time() - start < 8:
+                waiting = 0
+                try:
+                    waiting = self.connection.in_waiting
+                except Exception:
+                    waiting = 0
+                if waiting:
+                    chunk = self.connection.read(waiting).decode('utf-8', errors='ignore')
+                    buffer += chunk
+                    # Show device output
+                    self.log_to_terminal(chunk, "output")
+
+                    lower = buffer.lower()
+                    # Some devices ask to press ENTER first
+                    if press_enter_re.search(lower):
+                        try:
+                            self.connection.write(b"\r\n")
+                        except Exception:
+                            pass
+
+                    # Send username when prompted
+                    if not sent_user and username and login_re.search(lower):
+                        try:
+                            self.connection.write((username + "\r\n").encode())
+                            self.log_to_terminal("[auto-login] Sent username.", "info")
+                            sent_user = True
+                        except Exception:
+                            pass
+
+                    # Send password when prompted
+                    if not sent_pass and password and pass_re.search(lower):
+                        try:
+                            self.connection.write((password + "\r\n").encode())
+                            self.log_to_terminal("[auto-login] Sent password (hidden).", "info")
+                            sent_pass = True
+                        except Exception:
+                            pass
+
+                    # If we appear to have a prompt and we already sent credentials, exit precheck
+                    if sent_pass or (sent_user and not password):
+                        if re.search(r"(^|\n).*[>#]\s*$", buffer):
+                            break
+                else:
+                    # Small wait and try to wake the line once more
+                    time.sleep(0.2)
+                    try:
+                        self.connection.write(b"\r\n")
+                    except Exception:
+                        pass
+
+            # If no output captured, note it for user
+            if not buffer:
                 self.log_to_terminal("No initial response from device", "info")
-                
+
         except Exception as e:
             self.log_to_terminal(f"Precheck error: {str(e)}", "error")
+        finally:
+            self.set_busy(False)
 
     def query_ai(self, event=None):
         user_request = self.ai_input.get()
@@ -1663,7 +1846,7 @@ class NetApp(tk.Tk):
 
         self.ai_output.delete('1.0', tk.END)
         self.ai_output.insert(tk.END, f"> User: {user_request}\n\n")
-        self.update_status("Querying AI...")
+        self.set_busy(True, "Querying AI…")
         self.update_idletasks()
         
         commands = self.ai_provider.get_commands(
@@ -1678,6 +1861,7 @@ class NetApp(tk.Tk):
             ollama_model=self.ollama_model_combo.get(),
             gemini_model=self.get_selected_gemini_model_full()
         )
+        self.set_busy(False)
         
         self.ai_output.insert(tk.END, "AI Generated Commands:\n")
         self.ai_output.insert(tk.END, "------------------------\n")
@@ -1740,7 +1924,7 @@ class NetApp(tk.Tk):
             return
 
         # Change request: generate commands with AI
-        self.update_status("Generating commands via AI…")
+        self.set_busy(True, "Generating commands via AI…")
         commands = self.ai_provider.get_commands(
             text,
             manufacturer,
@@ -1753,6 +1937,7 @@ class NetApp(tk.Tk):
             gemini_model=self.get_selected_gemini_model_full(),
             prompt_style='default'  # First, try to get commands
         )
+        self.set_busy(False)
 
         # If the first attempt returns an error, automatically switch to guidance mode and retry
         if commands and commands[0].strip().startswith("# AI Error:"):
@@ -1760,6 +1945,7 @@ class NetApp(tk.Tk):
             self.chat_log.insert(tk.END, f"AI: {commands[0]}\n")
             self.chat_log.insert(tk.END, "\nAI: The request is complex. Here is some general guidance:\n\n")
 
+            self.set_busy(True, "Asking AI for guidance…")
             guidance_response = self.ai_provider.get_commands(
                 text,
                 manufacturer,
@@ -1772,6 +1958,7 @@ class NetApp(tk.Tk):
                 gemini_model=self.get_selected_gemini_model_full(),
                 prompt_style='guidance'  # Retry in guidance mode
             )
+            self.set_busy(False)
             # Display guidance and clear the other panes as there are no commands to push
             for line in guidance_response:
                 self.chat_log.insert(tk.END, line + "\n")
@@ -2121,8 +2308,7 @@ class NetApp(tk.Tk):
             return
 
         self.log_to_terminal(f"\n>>> Pushing {len(original_commands)} commands from AI Assistant...", "info")
-        self.update_status(f"Sending {len(original_commands)} commands...")
-        self.update_idletasks()
+        self.set_busy(True, f"Sending {len(original_commands)} commands…")
 
         self._pause_serial_reader()
         try:
@@ -2202,6 +2388,7 @@ class NetApp(tk.Tk):
             self.log_to_terminal(f"Error sending commands: {str(e)}", "error")
         finally:
             self._resume_serial_reader()
+            self.set_busy(False)
             
         self.update_status("Command push finished or was halted by an error.")
 

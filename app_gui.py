@@ -343,6 +343,10 @@ class NetApp(tk.Tk):
         self.com_port_combo = ttk.Combobox(conn_frame, state="readonly")
         self.com_port_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         tk.Button(conn_frame, text="Refresh", command=self.refresh_com_ports).grid(row=1, column=2, padx=5, pady=5)
+        tk.Label(conn_frame, text="Baud:").grid(row=1, column=3, padx=5, pady=5, sticky="w")
+        self.baud_combo = ttk.Combobox(conn_frame, state="readonly", values=["9600","19200","38400","57600","115200"], width=8)
+        self.baud_combo.grid(row=1, column=4, padx=5, pady=5, sticky="w")
+        self.baud_combo.set("115200")
         # Populate COM ports now that the combobox exists
         self.refresh_com_ports()
         tk.Label(conn_frame, text="Username:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
@@ -360,6 +364,7 @@ class NetApp(tk.Tk):
         self.connect_btn.grid(row=4, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
         self.enable_btn = tk.Button(conn_frame, text="Enter Enable Mode", command=self.enter_enable_mode)
         self.enable_btn.grid(row=4, column=2, columnspan=2, padx=10, pady=5, sticky="ew")
+        conn_frame.columnconfigure(1, weight=1)
 
         profile_btn_frame = tk.Frame(conn_frame)
         profile_btn_frame.grid(row=0, column=2, columnspan=2, sticky='ew')
@@ -371,14 +376,14 @@ class NetApp(tk.Tk):
         terminal_frame.pack(pady=10, padx=10, expand=True, fill="both")
         self.terminal = scrolledtext.ScrolledText(terminal_frame, wrap=tk.WORD, bg="black", fg="white", font=("Consolas", 10))
         self.terminal.pack(expand=True, fill="both")
-        # Simple terminal input for interactive CLI
-        term_input_frame = tk.Frame(terminal_frame)
-        term_input_frame.pack(fill="x", padx=10, pady=5)
-        self.term_input = tk.Entry(term_input_frame, font=("Consolas", 10))
-        self.term_input.pack(side=tk.LEFT, fill="x", expand=True)
-        self.term_input.bind("<Return>", self.send_terminal_input)
-        tk.Button(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=5)
-        tk.Button(term_input_frame, text="Send ENTER", command=self.send_enter_key).pack(side=tk.LEFT, padx=5)
+        # Direct input: type into terminal window and press Enter to send
+        self._setup_direct_terminal_input()
+        self._show_prompt()
+
+        # Make Push-to-Device accessible near the terminal as well
+        term_actions = tk.Frame(terminal_frame)
+        term_actions.pack(fill="x", padx=10, pady=6)
+        tk.Button(term_actions, text="Push AI Commands to Device", command=self.push_ai_commands).pack(side=tk.LEFT, fill="x", expand=True)
 
         # --- Right-hand side layout --- 
         right_master_frame = tk.Frame(main_pane)
@@ -821,6 +826,10 @@ class NetApp(tk.Tk):
             self.terminal.delete('1.0', tk.END)
         except Exception:
             pass
+        try:
+            self._show_prompt()
+        except Exception:
+            pass
 
     def run_device_command(self, cmd, timeout=4):
         """Send a command to the connected device and capture its response."""
@@ -1150,6 +1159,10 @@ class NetApp(tk.Tk):
 
     def connect(self):
         com_port = self.com_port_combo.get()
+        try:
+            baudrate = int(self.baud_combo.get()) if hasattr(self, 'baud_combo') and self.baud_combo.get() else 115200
+        except Exception:
+            baudrate = 115200
         username = self.user_entry.get()
         password = self.pass_entry.get()
         
@@ -1161,9 +1174,9 @@ class NetApp(tk.Tk):
             # Create serial connection
             self.connection = serial.Serial(
                 port=com_port,
-                baudrate=9600,  # Default baudrate, can be made configurable
-                timeout=0,      # Non-blocking reads
-                write_timeout=1
+                baudrate=baudrate,
+                timeout=0,          # Non-blocking reads
+                write_timeout=3      # Give writes more time
             )
             # Clear buffers and start reader
             self.connection.reset_input_buffer()
@@ -1261,8 +1274,95 @@ class NetApp(tk.Tk):
             # Continue polling while reader active
             self.after(50 if drained else 100, self._drain_serial_queue)
 
+    # --- Direct typing support in terminal ---
+    def _setup_direct_terminal_input(self):
+        try:
+            # Always type at the end of the terminal
+            self.terminal.bind("<Key>", self._terminal_force_end)
+            # Handle BackSpace within current input line only
+            self.terminal.bind("<BackSpace>", self._terminal_on_backspace)
+            # Handle Enter to send command
+            self.terminal.bind("<Return>", self._terminal_on_return)
+        except Exception:
+            pass
+
+    def _show_prompt(self):
+        try:
+            # Set a mark where logs should insert (before the prompt)
+            self.terminal.mark_set('PROMPT', tk.END)
+            self.terminal.mark_gravity('PROMPT', tk.RIGHT)
+            # Insert prompt
+            self.terminal.insert(tk.END, "\n> ", "prompt")
+            self.terminal.see(tk.END)
+            # Mark start of user input after prompt
+            self.terminal.mark_set('INPUT_START', tk.END)
+            self.terminal.mark_gravity('INPUT_START', tk.LEFT)
+        except Exception:
+            pass
+
+    def _terminal_force_end(self, event):
+        # Keep insertion point at end so typing doesn't edit prior logs
+        try:
+            if event.keysym == "Return":
+                return None
+            self.terminal.mark_set(tk.INSERT, tk.END)
+        except Exception:
+            pass
+        return None
+
+    def _terminal_on_backspace(self, event):
+        try:
+            # Constrain deletion to current input line
+            self.terminal.mark_set(tk.INSERT, tk.END)
+            try:
+                start = self.terminal.index('INPUT_START')
+            except Exception:
+                start = None
+            if not start:
+                return None
+            if self.terminal.compare(tk.END, "==", start):
+                return "break"  # nothing to delete
+            # Delete single char before end
+            self.terminal.delete("%s-1c" % tk.END, tk.END)
+            return "break"
+        except Exception:
+            return None
+
+    def _terminal_on_return(self, event):
+        try:
+            try:
+                start = self.terminal.index('INPUT_START')
+            except Exception:
+                start = None
+            if not start:
+                text = ''
+            else:
+                text = self.terminal.get(start, tk.END).strip()
+            # Clear the current input line before sending
+            if start:
+                self.terminal.delete(start, tk.END)
+            self._send_command(text)
+            return "break"
+        except Exception:
+            return "break"
+
     def send_terminal_input(self, event=None):
-        cmd = self.term_input.get().strip()
+        # Support both legacy Entry and direct terminal typing
+        cmd = None
+        if hasattr(self, 'term_input') and self.term_input:
+            cmd = self.term_input.get().strip()
+            self.term_input.delete(0, tk.END)
+        else:
+            try:
+                start = self.terminal.index('INPUT_START')
+                cmd = self.terminal.get(start, tk.END).strip()
+                # Clear the input area
+                self.terminal.delete(start, tk.END)
+            except Exception:
+                cmd = ''
+        self._send_command(cmd)
+
+    def _send_command(self, cmd):
         # Reset the fixer state each time a new command is sent
         self.fix_command_btn.config(state=tk.DISABLED)
         self.last_manual_command = None
@@ -1271,22 +1371,45 @@ class NetApp(tk.Tk):
         # Local CLI: clear terminal regardless of connection
         if cmd.lower() in ("clear", "cls"):
             self.clear_terminal()
-            self.term_input.delete(0, tk.END)
             return
         if not cmd:
+            # If no text, treat as plain ENTER
+            try:
+                self.send_enter_key()
+            except Exception:
+                pass
+            # Refresh prompt after plain enter
+            try:
+                self._show_prompt()
+            except Exception:
+                pass
             return
         if not self.connection or not getattr(self, "is_connected", False):
             messagebox.showerror("Error", "Not connected to any device")
             return
         try:
-            # Echo command to terminal and send to device
-            self.log_to_terminal(f"\n> {cmd}\r\n", "command")
+            # Echo command right at the end so it’s visible near the prompt
+            self._echo_command(cmd)
+            # Send to device
             self.connection.write((cmd + "\r\n").encode())
-            self.term_input.delete(0, tk.END)
             self.last_manual_command = cmd # Save for the fixer
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send: {e}")
             self.log_to_terminal(f"\n[Send error] {e}\n", "error")
+        finally:
+            try:
+                self._show_prompt()
+            except Exception:
+                pass
+
+    def _echo_command(self, cmd):
+        # Echo the command near the prompt so the user sees what was sent
+        try:
+            self.terminal.tag_config("command", foreground="yellow")
+            self.terminal.insert(tk.END, f"\n> {cmd}\n", "command")
+            self.terminal.see(tk.END)
+        except Exception:
+            pass
 
     def _get_ai_correction(self, failed_cmd, error_msg):
         """Gets a command correction using a multi-step process: local DB, AI, then guidance."""
@@ -1862,8 +1985,19 @@ class NetApp(tk.Tk):
         self.terminal.tag_config("error", foreground="red")
         self.terminal.tag_config("command", foreground="yellow")
         self.terminal.tag_config("prompt", foreground="lime green")
-        
-        self.terminal.insert(tk.END, message + "\n", tag)
+
+        # Ensure device/log output appears ABOVE the current prompt/input line
+        insert_index = tk.END
+        try:
+            if hasattr(self.terminal, 'mark_set'):
+                # Insert before prompt mark if it exists
+                try:
+                    insert_index = self.terminal.index('PROMPT')
+                except Exception:
+                    insert_index = tk.END
+        except Exception:
+            insert_index = tk.END
+        self.terminal.insert(insert_index, message + "\n", tag)
         self.terminal.see(tk.END)
         self.update_idletasks()
 
@@ -2041,8 +2175,9 @@ class NetApp(tk.Tk):
             self.connection.write((enable_password + "\r\n").encode())
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send enable commands: {e}")
+        # Enable mode entered; KB viewer is available via the "View KB" button.
 
-        self.update_status(f
+    def show_knowledge_base_window(self):
         kb_window = tk.Toplevel(self)
         kb_window.title("Knowledge Base Browser")
         kb_window.geometry("800x600")
@@ -2065,7 +2200,7 @@ class NetApp(tk.Tk):
         tree.column("Manufacturer", width=100)
         tree.column("Category", width=200)
         tree.column("Timestamp", width=150)
-        
+
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side=tk.RIGHT, fill='y')

@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import scrolledtext, simpledialog, messagebox, ttk, filedialog
+import customtkinter as ctk
 import json
 import os
 import re
@@ -390,11 +391,21 @@ class AIProvider:
             return ["# AI (Simulated): Request not recognized."]
 
 
-class NetApp(tk.Tk):
+class NetApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        try:
+            ctk.set_appearance_mode("Dark")
+            ctk.set_default_color_theme("blue")
+        except Exception:
+            pass
         self.title("NetIntelli X")
-        self.geometry("1000x800")
+        # Default size aligned with provided screenshot
+        self.geometry("1478x768")
+        try:
+            self.minsize(1200, 700)
+        except Exception:
+            pass
 
         self.connection = None
         self.serial_queue = queue.Queue()
@@ -485,7 +496,12 @@ class NetApp(tk.Tk):
 
         terminal_frame = tk.LabelFrame(left_frame, text="Device Terminal", bd=2, relief=tk.GROOVE)
         terminal_frame.pack(pady=10, padx=10, expand=True, fill="both")
-        self.terminal = scrolledtext.ScrolledText(terminal_frame, wrap=tk.WORD, bg="black", fg="white", font=("Consolas", 10))
+        # Use CustomTkinter textbox for better theming and resizing
+        self.terminal = ctk.CTkTextbox(terminal_frame)
+        try:
+            self.terminal.configure(wrap='word', font=("Consolas", 10))
+        except Exception:
+            pass
         self.terminal.pack(expand=True, fill="both")
         # Direct input: type into terminal window and press Enter to send
         self._setup_direct_terminal_input()
@@ -589,42 +605,43 @@ class NetApp(tk.Tk):
         right_split = tk.PanedWindow(right_master_frame, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
         right_split.pack(fill="both", expand=True)
 
-        ai_assistant_frame = tk.LabelFrame(right_split, text="AI Assistant", relief=tk.GROOVE)
+        ai_assistant_frame = ctk.CTkFrame(right_split)
         right_split.add(ai_assistant_frame, minsize=300)
-        context_frame = tk.Frame(ai_assistant_frame)
-        context_frame.pack(pady=5, padx=10, fill='x')
-        tk.Label(context_frame, text="Manufacturer:").grid(row=0, column=0, sticky="w")
-        # Group manufacturer Entry and Dropdown in a subframe so dropdown sits under the entry
-        man_field_frame = tk.Frame(context_frame)
-        man_field_frame.grid(row=0, column=1, sticky="ew", padx=2)
-        self.man_entry = tk.Entry(man_field_frame)
-        self.man_entry.pack(fill="x")
-        self.man_combo = ttk.Combobox(man_field_frame, state="readonly", values=["Cisco", "H3C", "Huawei", "Juniper", "Other"])
-        self.man_combo.pack(fill="x", pady=2)
-        self.man_combo.bind("<<ComboboxSelected>>", self._on_manufacturer_selected)
-        tk.Label(context_frame, text="Device Type:").grid(row=1, column=0, sticky="w")
-        self.type_entry = tk.Entry(context_frame)
-        self.type_entry.grid(row=1, column=1, sticky="ew", padx=2)
-        tk.Label(context_frame, text="Model:").grid(row=2, column=0, sticky="w")
-        self.model_entry = tk.Entry(context_frame)
-        self.model_entry.grid(row=2, column=1, sticky="ew", padx=2)
-        tk.Label(context_frame, text="Version:").grid(row=3, column=0, sticky="w")
-        self.ver_entry = tk.Entry(context_frame)
-        self.ver_entry.grid(row=3, column=1, sticky="ew", padx=2)
-
-        self.fetch_info_btn = tk.Button(context_frame, text="Fetch Device Info", command=self.fetch_device_info)
-        self.fetch_info_btn.grid(row=4, column=0, pady=5, sticky="ew")
-        self.build_db_btn = tk.Button(context_frame, text="Build Cmd DB", command=self.build_command_database)
-        self.build_db_btn.grid(row=4, column=1, pady=5, sticky="ew")
-        # Stop scraping/build button (enabled only while building)
+        # Header label to mimic LabelFrame caption
+        ctk.CTkLabel(ai_assistant_frame, text="AI Assistant", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(8,0))
+        context_frame = ctk.CTkFrame(ai_assistant_frame)
+        context_frame.pack(pady=6, padx=10, fill='x')
+        # Evenly space the action buttons in row 4
         try:
-            self.stop_db_btn = tk.Button(context_frame, text="Stop Scraping", command=self.stop_command_database, state=tk.DISABLED)
-            self.stop_db_btn.grid(row=4, column=4, pady=5, sticky="ew")
+            for c in range(0, 4):
+                context_frame.grid_columnconfigure(c, weight=1, uniform="buttons")
         except Exception:
             pass
-        self.view_kb_btn = tk.Button(context_frame, text="View KB", command=self.show_knowledge_base_window)
+        ctk.CTkLabel(context_frame, text="Manufacturer:").grid(row=0, column=0, sticky="w")
+        # Group manufacturer Entry and Dropdown in a subframe so dropdown sits under the entry
+        man_field_frame = ctk.CTkFrame(context_frame)
+        man_field_frame.grid(row=0, column=1, sticky="ew", padx=2)
+        self.man_entry = ctk.CTkEntry(man_field_frame)
+        self.man_entry.pack(fill="x")
+        self.man_combo = ctk.CTkComboBox(man_field_frame, values=["Cisco", "H3C", "Huawei", "Juniper", "Other"], command=self._on_manufacturer_combo_changed)
+        self.man_combo.pack(fill="x", pady=2)
+        ctk.CTkLabel(context_frame, text="Device Type:").grid(row=1, column=0, sticky="w")
+        self.type_entry = ctk.CTkEntry(context_frame)
+        self.type_entry.grid(row=1, column=1, sticky="ew", padx=2)
+        ctk.CTkLabel(context_frame, text="Model:").grid(row=2, column=0, sticky="w")
+        self.model_entry = ctk.CTkEntry(context_frame)
+        self.model_entry.grid(row=2, column=1, sticky="ew", padx=2)
+        ctk.CTkLabel(context_frame, text="Version:").grid(row=3, column=0, sticky="w")
+        self.ver_entry = ctk.CTkEntry(context_frame)
+        self.ver_entry.grid(row=3, column=1, sticky="ew", padx=2)
+
+        self.fetch_info_btn = ctk.CTkButton(context_frame, text="Fetch Device Info", command=self.fetch_device_info)
+        self.fetch_info_btn.grid(row=4, column=0, pady=5, sticky="ew")
+        self.build_db_btn = ctk.CTkButton(context_frame, text="Build Cmd DB", command=self.build_command_database)
+        self.build_db_btn.grid(row=4, column=1, pady=5, sticky="ew")
+        self.view_kb_btn = ctk.CTkButton(context_frame, text="View KB", command=self.show_knowledge_base_window)
         self.view_kb_btn.grid(row=4, column=2, pady=5, sticky="ew")
-        self.import_json_btn = tk.Button(context_frame, text="Import CLI JSON", command=self.import_cli_json)
+        self.import_json_btn = ctk.CTkButton(context_frame, text="Import CLI JSON", command=self.import_cli_json)
         self.import_json_btn.grid(row=4, column=3, pady=5, sticky="ew")
 
         context_frame.columnconfigure(1, weight=1)
@@ -928,9 +945,7 @@ class NetApp(tk.Tk):
             try:
                 if self.stop_db_build_event:
                     self.stop_db_build_event.clear()
-                self.build_db_btn.config(state=tk.DISABLED)
-                if hasattr(self, 'stop_db_btn'):
-                    self.stop_db_btn.config(state=tk.NORMAL)
+                self._set_build_button_state(True)
             except Exception:
                 pass
             # Run the potentially long-running task in a separate thread
@@ -1258,12 +1273,19 @@ class NetApp(tk.Tk):
                 db_conn.close()
             # Restore UI buttons
             try:
-                if hasattr(self, 'stop_db_btn'):
-                    self.stop_db_btn.config(state=tk.DISABLED)
-                if hasattr(self, 'build_db_btn'):
-                    self.build_db_btn.config(state=tk.NORMAL)
+                self._set_build_button_state(False)
             except Exception:
                 pass
+
+    def _set_build_button_state(self, building: bool):
+        """Toggle the Build Cmd DB button into a Stop button while building."""
+        try:
+            if building:
+                self.build_db_btn.config(text="Stop Build", command=self.stop_command_database, state=tk.NORMAL)
+            else:
+                self.build_db_btn.config(text="Build Cmd DB", command=self.build_command_database, state=tk.NORMAL)
+        except Exception:
+            pass
 
     def import_cli_json(self):
         """Import CLI-related JSON and append data into cli_cache.db tables.
@@ -1640,6 +1662,18 @@ class NetApp(tk.Tk):
                 pass
         except Exception:
             pass
+
+    def _on_manufacturer_combo_changed(self, choice: str):
+        """Wrapper to support CTkComboBox 'command' callback.
+        Keeps existing behavior by delegating to _on_manufacturer_selected.
+        """
+        try:
+            # Ensure combo reflects the selected value, then reuse existing handler
+            if choice:
+                self.man_combo.set(choice)
+        except Exception:
+            pass
+        self._on_manufacturer_selected(None)
 
     def clear_terminal(self):
         try:

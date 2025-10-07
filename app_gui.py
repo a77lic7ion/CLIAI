@@ -1508,7 +1508,6 @@ class NetApp(tk.Tk):
             
             self.is_connected = True
             self.connect_btn.config(text="Disconnect")
-            self.push_to_device_btn.config(state=tk.NORMAL)
             self.log_to_terminal(f"Connected to {com_port}")
             self.update_status(f"Connected to {com_port}")
             self.run_precheck()
@@ -1525,7 +1524,6 @@ class NetApp(tk.Tk):
                 self.connection = None
                 self.is_connected = False
                 self.connect_btn.config(text="Connect")
-                self.push_to_device_btn.config(state=tk.DISABLED)
                 self.log_to_terminal("Disconnected")
                 self.update_status("Disconnected")
             except Exception as e:
@@ -2069,6 +2067,9 @@ class NetApp(tk.Tk):
                 try:
                     btn = tk.Button(self.chat_log, text="Send to CLI", command=lambda c=cmd: self._send_cli_from_chat(c))
                     self.chat_log.window_create(tk.END, window=btn)
+                    # Add an Edit & Save Correction button next to it
+                    edit_btn = tk.Button(self.chat_log, text="Edit & Save", command=lambda c=cmd: self._edit_and_save_chat_command(c))
+                    self.chat_log.window_create(tk.END, window=edit_btn)
                     self.chat_log.insert(tk.END, "\n")
                 except Exception:
                     # Fallback: just note the action if button cannot be created
@@ -2101,6 +2102,45 @@ class NetApp(tk.Tk):
         except Exception as e:
             try:
                 self.log_to_terminal(f"Error sending command: {e}", "error")
+            except Exception:
+                pass
+
+    def _edit_and_save_chat_command(self, incorrect_cmd):
+        """Allow the user to edit an AI-proposed command and save the correction.
+
+        - Opens a prompt to edit the command.
+        - Saves manufacturer-scoped correction to local DB.
+        - Offers to send the corrected command immediately.
+        """
+        try:
+            if not incorrect_cmd:
+                return
+            new_cmd = simpledialog.askstring(
+                "Edit Command",
+                "Edit the command and click OK to save as a correction:",
+                initialvalue=incorrect_cmd
+            )
+            if new_cmd is None:
+                return
+            new_cmd = new_cmd.strip()
+            if not new_cmd:
+                return
+            # Persist correction scoped by current manufacturer/device type
+            try:
+                self._save_correction_to_db(incorrect_cmd, new_cmd)
+                self.chat_log.insert(tk.END, f"Saved correction: '{incorrect_cmd}' -> '{new_cmd}'\n")
+            except Exception:
+                pass
+
+            # Optionally send the corrected command now
+            try:
+                if messagebox.askyesno("Send Now?", "Send corrected command to device now?"):
+                    self._send_cli_from_chat(new_cmd)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                self.log_to_terminal(f"Failed to edit/save correction: {e}", "error")
             except Exception:
                 pass
 

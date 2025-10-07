@@ -9,6 +9,7 @@ import serial.tools.list_ports
 import time
 import threading
 import queue
+import sqlite3
 
 # --- AI Provider Integration ---
 try:
@@ -67,45 +68,87 @@ class AIProvider:
         except Exception as e:
             messagebox.showerror("AI Initialization Error", f"Failed to initialize {self.provider}: {e}")
 
-    def get_commands(self, user_request, manufacturer, model, version, use_web_search=False, ollama_model='llama3', gemini_model=None):
+    def get_commands(self, user_request, manufacturer, model, version, device_type=None, running_config=None, use_web_search=False, ollama_model='llama3', gemini_model=None, prompt_style='default'):
         if self.provider == "None": return ["# AI not configured."]
         if self.provider == "Simulation": return self.run_simulation(user_request)
 
         device_context = f"The target device is a **{manufacturer}**"
+        if device_type: device_context += f" of type **{device_type}**"
         if model: device_context += f" model **{model}**"
         if version: device_context += f" running software version **{version}**"
         device_context += "."
 
+        config_context = ""
+        if running_config and running_config.strip():
+            config_context = f"""**CURRENT DEVICE CONFIGURATION:**
+---
+{running_config}
+---
+Based on the configuration above, and the user's request below, generate the necessary commands."""
+
         # --- A much more forceful and explicit system prompt ---
-        system_prompt = f"""
-        You are a world-class network engineering expert AI. Your one and only task is to generate precise, executable CLI commands for a specific network device.
+        if prompt_style == 'guidance':
+            system_prompt = f"""
+            You are a world-class network engineering expert AI, acting as a helpful assistant. Your task is to provide clear, detailed, and helpful guidance for network configuration tasks.
 
-        **CRITICAL CONTEXT:** The target device is a **{manufacturer.upper()}** device. All commands you generate **MUST** use the correct syntax for **{manufacturer.upper()}**. Do not use syntax from any other vendor, especially Cisco, unless the manufacturer is explicitly set to Cisco.
+            {config_context}
 
-        **DEVICE DETAILS:** {device_context}
+            **CONTEXT:** The user is working with a **{manufacturer.upper()} {device_type.upper() if device_type else ''}** device. Your advice should be tailored to this vendor and device type.
 
-        **YOUR DIRECTIVES:**
-        1.  **PRIORITIZE THE MANUFACTURER:** The user-provided manufacturer ({manufacturer.upper()}) is the most important piece of information. Your output must be 100% correct for this vendor.
-        2.  **COMMANDS ONLY:** Your entire response must be only the CLI commands needed to achieve the user's goal.
-        3.  **NO EXPLANATIONS:** Do not add any descriptive text, apologies, or introductory sentences like "Here are the commands...".
-        4.  **NO MARKDOWN:** Do not use markdown code blocks (```).
-        5.  **ONE COMMAND PER LINE:** Each command must be on a new line.
-        6.  **HANDLE AMBIGUITY:** If the request is unclear or cannot be fulfilled, return a single line starting with '# AI Error:' followed by a brief explanation.
+            **YOUR DIRECTIVES:**
+            1.  **BE HELPFUL AND EXPLANATORY:** The user is asking a general question. Do not just provide commands. Explain the concepts, outline the steps involved, and provide examples.
+            2.  **ASK FOR DETAILS (if needed):** If the user's request is missing critical information (like IP addresses), explain what information is needed and why. Provide placeholders in your examples (e.g., `<Your_IP_Address>`).
+            3.  **STRUCTURE YOUR RESPONSE:** Use formatting like lists, steps, and code blocks to make your answer easy to read and follow.
+            4.  **USE MARKDOWN:** You can use Markdown for formatting. Use code blocks (```) for command examples.
+            """
+        elif prompt_style == 'fix_command':
+            system_prompt = f"""
+            You are a network command correction expert for {manufacturer.upper()} {device_type.upper() if device_type else ''} devices. The user executed a command and received an error. Your task is to provide only the single, corrected, executable CLI command that the user likely intended to run.
 
-        **Example for H3C:**
-        User Request: create vlan 100
-        Correct Response:
-        system-view
-        vlan 100
-        quit
+            {config_context}
 
-        **Example for Cisco:**
-        User Request: create vlan 100
-        Correct Response:
-        configure terminal
-        vlan 100
-        end
-        """
+            **USER'S COMMAND:** {user_request.split('ERR_SEPARATOR')[0]}
+            **DEVICE ERROR MESSAGE:** {user_request.split('ERR_SEPARATOR')[1]}
+
+            **YOUR DIRECTIVES:**
+            1.  **COMMANDS ONLY:** Your entire response must be only the corrected CLI command(s).
+            2.  **NO EXPLANATIONS:** Do not add any descriptive text or apologies.
+            3.  **NO MARKDOWN:** Do not use markdown code blocks (```).
+            4.  **ONE COMMAND PER LINE:** Each command must be on a new line.
+            5.  If you cannot determine a correction, return a single line starting with '# AI Error: Unable to determine correction.'
+            """
+        else: # Default prompt
+            system_prompt = f"""
+            You are a world-class network engineering expert AI. Your one and only task is to generate precise, executable CLI commands for a specific network device.
+
+            {config_context}
+
+            **CRITICAL CONTEXT:** The target device is a **{manufacturer.upper()} {device_type.upper() if device_type else ''}** device. All commands you generate **MUST** use the correct syntax for this specific platform.
+
+            **DEVICE DETAILS:** {device_context}
+
+            **YOUR DIRECTIVES:**
+            1.  **PRIORITIZE THE PLATFORM:** The user-provided manufacturer and device type ({manufacturer.upper()} {device_type.upper() if device_type else ''}) are the most important pieces of information. Your output must be 100% correct for this platform.
+            2.  **COMMANDS ONLY:** Your entire response must be only the CLI commands needed to achieve the user's goal.
+            3.  **NO EXPLANATIONS:** Do not add any descriptive text, apologies, or introductory sentences like "Here are the commands...".
+            4.  **NO MARKDOWN:** Do not use markdown code blocks (```).
+            5.  **ONE COMMAND PER LINE:** Each command must be on a new line.
+            6.  **HANDLE AMBIGUITY:** If the request is unclear or cannot be fulfilled, return a single line starting with '# AI Error:' followed by a brief explanation.
+
+            **Example for H3C:**
+            User Request: create vlan 100
+            Correct Response:
+            system-view
+            vlan 100
+            quit
+
+            **Example for Cisco:**
+            User Request: create vlan 100
+            Correct Response:
+            configure terminal
+            vlan 100
+            end
+            """
         try:
             if self.provider == "Gemini":
                 # Use Gemini API via OpenAI-compatible endpoint (chat.completions)
@@ -267,6 +310,8 @@ class NetApp(tk.Tk):
         self.ai_provider = AIProvider()
         # Session memory for auto-corrected commands per context
         self.session_cmd_cache = {}
+        self.last_manual_command = None
+        self.last_chat_response = None
 
         # --- Main Content Frame ---
         main_frame = tk.Frame(self)
@@ -296,11 +341,20 @@ class NetApp(tk.Tk):
         tk.Label(conn_frame, text="Password:").grid(row=2, column=2, padx=5, pady=5, sticky="w")
         self.pass_entry = tk.Entry(conn_frame, show="*")
         self.pass_entry.grid(row=2, column=3, padx=5, pady=5, sticky="ew")
+
+        tk.Label(conn_frame, text="Enable Pass:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        self.enable_pass_entry = tk.Entry(conn_frame, show="*")
+        self.enable_pass_entry.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+
         self.connect_btn = tk.Button(conn_frame, text="Connect", command=self.toggle_connection)
-        self.connect_btn.grid(row=3, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.connect_btn.grid(row=4, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.enable_btn = tk.Button(conn_frame, text="Enter Enable Mode", command=self.enter_enable_mode)
+        self.enable_btn.grid(row=4, column=2, columnspan=2, padx=10, pady=5, sticky="ew")
+
         profile_btn_frame = tk.Frame(conn_frame)
         profile_btn_frame.grid(row=0, column=2, columnspan=2, sticky='ew')
         tk.Button(profile_btn_frame, text="Save", command=self.save_profile).pack(side=tk.LEFT, fill='x', expand=True)
+        tk.Button(profile_btn_frame, text="Update", command=self.update_profile).pack(side=tk.LEFT, fill='x', expand=True)
         tk.Button(profile_btn_frame, text="Delete", command=self.delete_profile).pack(side=tk.LEFT, fill='x', expand=True)
 
         terminal_frame = tk.LabelFrame(left_frame, text="Device Terminal", bd=2, relief=tk.GROOVE)
@@ -315,30 +369,18 @@ class NetApp(tk.Tk):
         self.term_input.bind("<Return>", self.send_terminal_input)
         tk.Button(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=5)
 
-        # Terminal options: wrap mode and clear
-        terminal_opts_frame = tk.Frame(terminal_frame)
-        terminal_opts_frame.pack(fill="x", padx=10, pady=2)
-        tk.Label(terminal_opts_frame, text="Terminal Wrap:").pack(side=tk.LEFT)
-        self.term_wrap_combo = ttk.Combobox(terminal_opts_frame, state="readonly", values=["Wrap (word)", "No wrap"], width=12)
-        self.term_wrap_combo.set("Wrap (word)")
-        self.term_wrap_combo.bind("<<ComboboxSelected>>", self.on_term_wrap_change)
-        self.term_wrap_combo.pack(side=tk.LEFT, padx=5)
-        tk.Button(terminal_opts_frame, text="Font +", command=self.increase_terminal_font).pack(side=tk.LEFT, padx=5)
-        tk.Button(terminal_opts_frame, text="Font -", command=self.decrease_terminal_font).pack(side=tk.LEFT)
-        # Pager controls
-        self.auto_pager_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(terminal_opts_frame, text="Auto-advance pager", variable=self.auto_pager_var).pack(side=tk.LEFT, padx=10)
-        tk.Button(terminal_opts_frame, text="Next Page", command=self.send_pager_next).pack(side=tk.LEFT)
-        tk.Button(terminal_opts_frame, text="Stop Paging", command=self.send_pager_stop).pack(side=tk.LEFT, padx=5)
-        tk.Button(terminal_opts_frame, text="Export…", command=self.export_terminal_chat).pack(side=tk.RIGHT, padx=5)
-        tk.Button(terminal_opts_frame, text="Clear", command=self.clear_terminal).pack(side=tk.RIGHT)
+        # --- Right-hand side layout --- 
+        right_master_frame = tk.Frame(main_pane)
+        main_pane.add(right_master_frame)
 
-        ai_pane = tk.PanedWindow(main_frame, orient=tk.VERTICAL, sashrelief=tk.RAISED)
-        main_pane.add(ai_pane)
+        # New top frame for side-by-side config sections
+        top_right_frame = tk.Frame(right_master_frame)
+        top_right_frame.pack(fill="x", expand=False, pady=5, padx=5)
 
-        # Top: AI Configuration (auto-expands entries)
-        ai_config_frame = tk.LabelFrame(ai_pane, text="AI Configuration", relief=tk.GROOVE)
-        ai_pane.add(ai_config_frame, minsize=140)
+        # AI Configuration (now on the left of the top-right frame)
+        ai_config_frame = tk.LabelFrame(top_right_frame, text="AI Configuration", relief=tk.GROOVE)
+        ai_config_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=(0, 5))
+
         tk.Label(ai_config_frame, text="Provider:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.ai_provider_combo = ttk.Combobox(ai_config_frame, state="readonly", values=["None", "Gemini", "OpenAI", "Mistral", "Claude", "Ollama", "Simulation"])
         self.ai_provider_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
@@ -359,11 +401,30 @@ class NetApp(tk.Tk):
         self.set_ai_btn.grid(row=4, column=0, padx=5, pady=5, sticky="ew")
         self.check_api_btn = tk.Button(ai_config_frame, text="Check API Key", command=self.check_api_key)
         self.check_api_btn.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
-        # Make the second column grow to fit
-        try:
-            ai_config_frame.columnconfigure(1, weight=1)
-        except Exception:
-            pass
+        ai_config_frame.columnconfigure(1, weight=1)
+
+        # Terminal Options (moved from left frame to top-right)
+        terminal_opts_frame = tk.LabelFrame(top_right_frame, text="Terminal Options", bd=2, relief=tk.GROOVE)
+        terminal_opts_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=(5, 0))
+
+        tk.Label(terminal_opts_frame, text="Wrap Mode:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        self.term_wrap_combo = ttk.Combobox(terminal_opts_frame, state="readonly", values=["Wrap (word)", "No wrap"], width=12)
+        self.term_wrap_combo.set("Wrap (word)")
+        self.term_wrap_combo.bind("<<ComboboxSelected>>", self.on_term_wrap_change)
+        self.term_wrap_combo.grid(row=0, column=1, sticky="w", padx=5, pady=2)
+        font_frame = tk.Frame(terminal_opts_frame)
+        font_frame.grid(row=0, column=2, sticky="w", padx=5, pady=2)
+        tk.Button(font_frame, text="Font +", command=self.increase_terminal_font).pack(side=tk.LEFT)
+        tk.Button(font_frame, text="Font -", command=self.decrease_terminal_font).pack(side=tk.LEFT)
+        self.auto_pager_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(terminal_opts_frame, text="Auto-pager", variable=self.auto_pager_var).grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        tk.Button(terminal_opts_frame, text="Next Page", command=self.send_pager_next).grid(row=1, column=1, sticky="w", padx=5, pady=2)
+        tk.Button(terminal_opts_frame, text="Stop Paging", command=self.send_pager_stop).grid(row=1, column=2, sticky="w", padx=5, pady=2)
+        self.fix_command_btn = tk.Button(terminal_opts_frame, text="Fix with AI", command=self.ai_fix_last_command, state=tk.DISABLED)
+        self.fix_command_btn.grid(row=2, column=0, sticky="w", padx=5, pady=5)
+        tk.Button(terminal_opts_frame, text="Clear", command=self.clear_terminal).grid(row=2, column=1, sticky="w", padx=5, pady=5)
+        tk.Button(terminal_opts_frame, text="Export…", command=self.export_terminal_chat).grid(row=2, column=2, sticky="w", padx=5, pady=5)
+
         # Apply requested defaults and initialize provider
         try:
             self.api_key_entry.delete(0, tk.END)
@@ -373,8 +434,9 @@ class NetApp(tk.Tk):
             pass
 
         # Bottom: Side-by-side split for AI Assistant and Chat
-        right_split = tk.PanedWindow(ai_pane, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
-        ai_pane.add(right_split)
+        right_split = tk.PanedWindow(right_master_frame, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
+        right_split.pack(fill="both", expand=True)
+
         ai_assistant_frame = tk.LabelFrame(right_split, text="AI Assistant", relief=tk.GROOVE)
         right_split.add(ai_assistant_frame, minsize=300)
         context_frame = tk.Frame(ai_assistant_frame)
@@ -382,17 +444,33 @@ class NetApp(tk.Tk):
         tk.Label(context_frame, text="Manufacturer:").grid(row=0, column=0, sticky="w")
         self.man_entry = tk.Entry(context_frame)
         self.man_entry.grid(row=0, column=1, sticky="ew", padx=2)
-        tk.Label(context_frame, text="Model:").grid(row=1, column=0, sticky="w")
+        tk.Label(context_frame, text="Device Type:").grid(row=1, column=0, sticky="w")
+        self.type_entry = tk.Entry(context_frame)
+        self.type_entry.grid(row=1, column=1, sticky="ew", padx=2)
+        tk.Label(context_frame, text="Model:").grid(row=2, column=0, sticky="w")
         self.model_entry = tk.Entry(context_frame)
-        self.model_entry.grid(row=1, column=1, sticky="ew", padx=2)
-        tk.Label(context_frame, text="Version:").grid(row=2, column=0, sticky="w")
+        self.model_entry.grid(row=2, column=1, sticky="ew", padx=2)
+        tk.Label(context_frame, text="Version:").grid(row=3, column=0, sticky="w")
         self.ver_entry = tk.Entry(context_frame)
-        self.ver_entry.grid(row=2, column=1, sticky="ew", padx=2)
+        self.ver_entry.grid(row=3, column=1, sticky="ew", padx=2)
 
         self.fetch_info_btn = tk.Button(context_frame, text="Fetch Device Info", command=self.fetch_device_info)
-        self.fetch_info_btn.grid(row=3, column=0, columnspan=2, pady=5, sticky="ew")
+        self.fetch_info_btn.grid(row=4, column=0, pady=5, sticky="ew")
+        self.build_db_btn = tk.Button(context_frame, text="Build Cmd DB", command=self.build_command_database)
+        self.build_db_btn.grid(row=4, column=1, pady=5, sticky="ew")
+        self.view_kb_btn = tk.Button(context_frame, text="View KB", command=self.show_knowledge_base_window)
+        self.view_kb_btn.grid(row=4, column=2, pady=5, sticky="ew")
 
         context_frame.columnconfigure(1, weight=1)
+        context_frame.columnconfigure(2, weight=1)
+
+        ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
+
+        self.fetch_config_btn = tk.Button(ai_assistant_frame, text="Fetch Running Config for AI Context", command=self.fetch_running_config)
+        self.fetch_config_btn.pack(pady=5, padx=10, fill="x")
+        self.running_config_text = scrolledtext.ScrolledText(ai_assistant_frame, wrap=tk.WORD, height=8, font=("Consolas", 9))
+        self.running_config_text.pack(pady=5, padx=10, expand=True, fill="both")
+
         ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
         tk.Label(ai_assistant_frame, text="Your Request:").pack(pady=5, padx=10, anchor="w")
         self.ai_input = tk.Entry(ai_assistant_frame, font=("Arial", 10))
@@ -418,6 +496,10 @@ class NetApp(tk.Tk):
         self.chat_input.pack(side=tk.LEFT, fill="x", expand=True)
         self.chat_input.bind("<Return>", self.chat_ask)
         tk.Button(chat_input_frame, text="Send", command=self.chat_ask).pack(side=tk.LEFT, padx=6)
+        tk.Button(chat_input_frame, text="Save to KB", command=self.save_chat_to_knowledge).pack(side=tk.LEFT, padx=6)
+
+        # Schedule sash placement for 50/50 split
+        self.after(100, lambda: right_split.sash_place(0, int(right_split.winfo_width() / 2), 0))
 
         # --- Status Bar ---
         self.status_var = tk.StringVar()
@@ -427,6 +509,176 @@ class NetApp(tk.Tk):
         self.load_profiles()
         self.on_ai_provider_change()
         self.update_status("Ready")
+        self._init_db()
+
+    def _init_db(self):
+        """Initialize the SQLite database to cache AI-generated commands."""
+        try:
+            self.db_conn = sqlite3.connect('cli_cache.db')
+            cursor = self.db_conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS generated_commands (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    manufacturer TEXT NOT NULL,
+                    user_request TEXT NOT NULL,
+                    generated_commands TEXT NOT NULL
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS command_knowledge (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    manufacturer TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    guidance_text TEXT NOT NULL
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS command_corrections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    manufacturer TEXT NOT NULL,
+                    device_type TEXT,
+                    incorrect_command TEXT NOT NULL UNIQUE,
+                    corrected_command TEXT NOT NULL
+                )
+            ''')
+            self.db_conn.commit()
+            self.log_to_terminal("Local command cache database initialized.", "info")
+        except Exception as e:
+            self.db_conn = None
+            self.log_to_terminal(f"Error initializing database: {e}", "error")
+
+    def _save_commands_to_db(self, manufacturer, request, commands):
+        """Save a generated command set to the database."""
+        if not self.db_conn or not commands or not request or not manufacturer:
+            return
+        try:
+            commands_text = "\n".join(commands)
+            cursor = self.db_conn.cursor()
+            cursor.execute(
+                "INSERT INTO generated_commands (manufacturer, user_request, generated_commands) VALUES (?, ?, ?)",
+                (manufacturer, request, commands_text)
+            )
+            self.db_conn.commit()
+        except Exception as e:
+            self.log_to_terminal(f"Failed to save commands to local cache: {e}", "error")
+
+    def _save_knowledge_to_db(self, manufacturer, category, guidance):
+        """Saves AI-generated guidance to the knowledge base table."""
+        if not self.db_conn or not guidance or not category or not manufacturer:
+            return
+        try:
+            guidance_text = "\n".join(guidance)
+            cursor = self.db_conn.cursor()
+            # Check if an entry for this manufacturer/category already exists
+            cursor.execute("SELECT id FROM command_knowledge WHERE manufacturer = ? AND category = ?", (manufacturer, category))
+            if cursor.fetchone():
+                # Update existing entry
+                cursor.execute(
+                    "UPDATE command_knowledge SET guidance_text = ?, timestamp = CURRENT_TIMESTAMP WHERE manufacturer = ? AND category = ?",
+                    (guidance_text, manufacturer, category)
+                )
+            else:
+                # Insert new entry
+                cursor.execute(
+                    "INSERT INTO command_knowledge (manufacturer, category, guidance_text) VALUES (?, ?, ?)",
+                    (manufacturer, category, guidance_text)
+                )
+            self.db_conn.commit()
+        except Exception as e:
+            self.log_to_terminal(f"Failed to save knowledge to local cache: {e}", "error")
+
+    def _save_correction_to_db(self, incorrect_cmd, corrected_cmd):
+        """Saves a successful command correction to the database for future use."""
+        if not self.db_conn or not incorrect_cmd or not corrected_cmd:
+            return
+        try:
+            manufacturer = self.man_entry.get()
+            device_type = self.type_entry.get()
+            # Use INSERT OR REPLACE to add the new correction or update an existing one for the same bad command
+            cursor = self.db_conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO command_corrections (manufacturer, device_type, incorrect_command, corrected_command) VALUES (?, ?, ?, ?)",
+                (manufacturer, device_type, incorrect_cmd, corrected_cmd)
+            )
+            self.db_conn.commit()
+            self.log_to_terminal(f"Saved correction for '{incorrect_cmd}' to local database.", "info")
+        except Exception as e:
+            self.log_to_terminal(f"Failed to save correction to DB: {e}", "error")
+
+    def build_command_database(self):
+        """Starts a background thread to populate the command knowledge base from the AI."""
+        manufacturer = self.man_entry.get().strip()
+        if not manufacturer:
+            messagebox.showerror("Input Error", "Manufacturer must be set to build the command database.")
+            return
+
+        if messagebox.askyesno("Confirm", f"This will ask the AI a series of questions to build a knowledge base for '{manufacturer}'. It may take several minutes and incur costs with your AI provider. Continue?"):
+            self.log_to_terminal(f"Starting command database build for {manufacturer}...", "info")
+            self.update_status(f"Building DB for {manufacturer}...")
+            # Run the potentially long-running task in a separate thread
+            thread = threading.Thread(target=self._build_db_worker, args=(manufacturer,), daemon=True)
+            thread.start()
+
+    def _build_db_worker(self, manufacturer):
+        """The actual worker function to query the AI and populate the DB."""
+        db_conn = None
+        try:
+            db_conn = sqlite3.connect('cli_cache.db')
+            cursor = db_conn.cursor()
+
+            topics = {
+                "VLANs": "a comprehensive guide to all common commands for creating, configuring, and deleting VLANs, including assigning ports to VLANs in both access and trunk mode.",
+                "Interfaces": "a comprehensive guide to all common commands for configuring physical interfaces, including setting speed, duplex, description, and enabling or disabling the interface.",
+                "L3 and Routing": "a comprehensive guide to all common commands for Layer 3 configuration, including setting IP addresses on interfaces/VLANs and configuring static routes.",
+                "System Management": "a comprehensive guide to all common commands for system management, including setting the hostname, clock, saving the configuration, and viewing system information like version and logs.",
+                "Port-Channel": "a comprehensive guide to all common commands for configuring Link Aggregation Groups (LAGs) or Port-Channels."
+            }
+
+            for category, question in topics.items():
+                full_request = f"For a {manufacturer} device, provide {question}"
+                self.log_to_terminal(f"Querying AI for category: {category}...", "info")
+                self.update_status(f"Building DB: Querying for {category}...")
+
+                guidance = self.ai_provider.get_commands(
+                    full_request,
+                    manufacturer,
+                    self.model_entry.get(),
+                    self.ver_entry.get(),
+                    device_type=self.type_entry.get(),
+                    prompt_style='guidance'
+                )
+
+                if guidance and not guidance[0].strip().startswith("# AI Error:"):
+                    guidance_text = "\n".join(guidance)
+                    cursor.execute("SELECT id FROM command_knowledge WHERE manufacturer = ? AND category = ?", (manufacturer, category))
+                    if cursor.fetchone():
+                        cursor.execute(
+                            "UPDATE command_knowledge SET guidance_text = ?, timestamp = CURRENT_TIMESTAMP WHERE manufacturer = ? AND category = ?",
+                            (guidance_text, manufacturer, category)
+                        )
+                    else:
+                        cursor.execute(
+                            "INSERT INTO command_knowledge (manufacturer, category, guidance_text) VALUES (?, ?, ?)",
+                            (manufacturer, category, guidance_text)
+                        )
+                    self.log_to_terminal(f"Successfully retrieved knowledge for {category}.", "info")
+                else:
+                    self.log_to_terminal(f"Failed to get guidance for {category}. Response: {guidance[0] if guidance else 'No response'}", "error")
+                
+                time.sleep(5) # Add a small delay to avoid hitting API rate limits
+
+            db_conn.commit()
+            self.log_to_terminal("Command database build finished and saved.", "info")
+            self.update_status("Command DB build finished.")
+        except Exception as e:
+            self.log_to_terminal(f"Database build worker failed: {e}", "error")
+            self.update_status("Command DB build failed.")
+        finally:
+            if db_conn:
+                db_conn.close()
 
     def update_status(self, message):
         self.status_var.set(message)
@@ -558,27 +810,45 @@ class NetApp(tk.Tk):
         """Send a command to the connected device and capture its response."""
         if not self.connection or not getattr(self, 'is_connected', False):
             raise RuntimeError("Not connected to any device.")
-        # Log and send
-        self.log_to_terminal(f"\n> {cmd}", "command")
+
+        self._pause_serial_reader()
         try:
+            self.log_to_terminal(f"\n> {cmd}", "command")
             self.connection.write((cmd + '\r\n').encode())
-        except Exception as e:
-            raise RuntimeError(f"Send failed: {e}")
-        # Read response until timeout
-        response = ""
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
+            
+            response = ""
+            start_time = time.time()
+            pager_re = re.compile(r"\s*-{2,}\s*More\s*-{2,}\s*|--More--")
+
+            while time.time() - start_time < timeout:
                 if self.connection.in_waiting > 0:
-                    response += self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
-            except Exception:
-                pass
-            time.sleep(0.1)
-        if response:
-            self.log_to_terminal(response, "output")
-        else:
-            self.log_to_terminal("(no response)", "info")
-        return response
+                    try:
+                        chunk = self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
+                        response += chunk
+
+                        # If we see a pager prompt, send a space and reset the timer
+                        if pager_re.search(response):
+                            self.connection.write(b' ')
+                            # Clean the pager text from our response buffer to avoid re-matching
+                            response = pager_re.sub('', response)
+                            start_time = time.time() # Reset timeout
+
+                    except Exception as e:
+                        self.log_to_terminal(f"[Read Error] {e}", "error")
+                        break # Exit loop on read error
+                else:
+                    time.sleep(0.2) # Wait a bit longer for the next chunk of data
+            
+            # Clean up any lingering backspaces or control characters from the final output
+            response = re.sub(r'.\x08', '', response)
+
+            if response:
+                self.log_to_terminal(response, "output")
+            else:
+                self.log_to_terminal("(no response)", "info")
+            return response
+        finally:
+            self._resume_serial_reader()
 
     def _is_cli_error(self, output):
         """Detect common CLI error responses across vendors."""
@@ -881,7 +1151,7 @@ class NetApp(tk.Tk):
             self.log_to_terminal(f"Connected to {com_port}")
             self.update_status(f"Connected to {com_port}")
             self.run_precheck()
-            self._start_serial_reader()
+            self._resume_serial_reader()
             
         except Exception as e:
             messagebox.showerror("Connection Error", f"Failed to connect to {com_port}: {str(e)}")
@@ -889,7 +1159,7 @@ class NetApp(tk.Tk):
     def disconnect(self):
         if self.connection:
             try:
-                self._stop_serial_reader()
+                self._pause_serial_reader()
                 self.connection.close()
                 self.connection = None
                 self.is_connected = False
@@ -900,7 +1170,7 @@ class NetApp(tk.Tk):
             except Exception as e:
                 messagebox.showerror("Disconnection Error", f"Error during disconnection: {str(e)}")
 
-    def _start_serial_reader(self):
+    def _resume_serial_reader(self):
         if self.reader_thread and self.reader_thread.is_alive():
             return
         self.reader_running = True
@@ -909,9 +1179,10 @@ class NetApp(tk.Tk):
         # Start draining queue on the Tk mainloop
         self.after(50, self._drain_serial_queue)
 
-    def _stop_serial_reader(self):
+    def _pause_serial_reader(self):
         self.reader_running = False
-        # Thread is daemon; it will exit automatically. Queue draining will stop when no data.
+        if self.reader_thread and self.reader_thread.is_alive():
+            self.reader_thread.join(timeout=1.0) # Wait for thread to stop
 
     def _serial_reader_loop(self):
         while self.reader_running and self.connection:
@@ -920,6 +1191,12 @@ class NetApp(tk.Tk):
                 waiting = self.connection.in_waiting
                 if waiting:
                     data = self.connection.read(waiting)
+                    # Add a small delay and try a second read to 'stick' reads together.
+                    # This helps prevent pager prompts from being split across two reads.
+                    time.sleep(0.05)
+                    if self.connection.in_waiting > 0:
+                        data += self.connection.read(self.connection.in_waiting)
+
                     if data:
                         try:
                             text = data.decode('utf-8', errors='ignore')
@@ -949,6 +1226,11 @@ class NetApp(tk.Tk):
                 text = self.serial_queue.get_nowait()
                 drained = True
                 self.log_to_terminal(text, "output")
+                # Check for errors to enable the fix button
+                if self._is_cli_error(text):
+                    self.last_error_output = text
+                    self.fix_command_btn.config(state=tk.NORMAL)
+
         except queue.Empty:
             pass
         if self.reader_running:
@@ -957,6 +1239,11 @@ class NetApp(tk.Tk):
 
     def send_terminal_input(self, event=None):
         cmd = self.term_input.get().strip()
+        # Reset the fixer state each time a new command is sent
+        self.fix_command_btn.config(state=tk.DISABLED)
+        self.last_manual_command = None
+        self.last_error_output = None
+
         # Local CLI: clear terminal regardless of connection
         if cmd.lower() in ("clear", "cls"):
             self.clear_terminal()
@@ -972,9 +1259,76 @@ class NetApp(tk.Tk):
             self.log_to_terminal(f"\n> {cmd}\r\n", "command")
             self.connection.write((cmd + "\r\n").encode())
             self.term_input.delete(0, tk.END)
+            self.last_manual_command = cmd # Save for the fixer
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send: {e}")
             self.log_to_terminal(f"\n[Send error] {e}\n", "error")
+
+    def _get_ai_correction(self, failed_cmd, error_msg):
+        """Gets a command correction using a multi-step process: local DB, AI, then guidance."""
+        manufacturer = self.man_entry.get()
+        device_type = self.type_entry.get()
+        if not manufacturer:
+            return ["# AI Error: Manufacturer not set."]
+
+        # 1. Check local corrections database first
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("SELECT corrected_command FROM command_corrections WHERE incorrect_command = ? AND manufacturer = ?", (failed_cmd, manufacturer))
+            result = cursor.fetchone()
+            if result:
+                self.log_to_terminal(f"Found correction for '{failed_cmd}' in local database.", "info")
+                return result[0].split('\n')
+        except Exception as e:
+            self.log_to_terminal(f"Failed to query local corrections DB: {e}", "error")
+
+        # 2. If not in local DB, try AI
+        self.update_status(f"Asking AI for correction for: {failed_cmd}...")
+        request_with_error = f"{failed_cmd}ERR_SEPARATOR{error_msg or 'Unknown error'}"
+        corrected_commands = self.ai_provider.get_commands(
+            request_with_error, manufacturer, self.model_entry.get(), self.ver_entry.get(),
+            device_type=device_type, running_config=self.running_config_text.get('1.0', tk.END),
+            prompt_style='fix_command'
+        )
+
+        # If AI can't find a specific fix, ask for general guidance instead
+        if corrected_commands and corrected_commands[0].strip().startswith("# AI Error: Unable to determine correction"):
+            self.update_status("No specific fix found, asking for general guidance...")
+            guidance_request = f"The command '{failed_cmd}' was incomplete or ambiguous. What are the possible valid commands that could follow it on a {manufacturer} {device_type} device? Provide a brief guide with examples."
+            guidance = self.ai_provider.get_commands(
+                guidance_request, manufacturer, self.model_entry.get(), self.ver_entry.get(),
+                device_type=device_type, running_config=self.running_config_text.get('1.0', tk.END),
+                prompt_style='guidance'
+            )
+            return guidance
+        
+        return corrected_commands
+
+    def ai_fix_last_command(self):
+        if not self.last_manual_command:
+            messagebox.showerror("Error", "No previous command to fix.")
+            return
+
+        self.update_status("Asking AI to fix the last command...")
+        
+        correction_or_guidance = self._get_ai_correction(self.last_manual_command, self.last_error_output)
+
+        is_fix = not (correction_or_guidance and correction_or_guidance[0].strip().startswith("#"))
+
+        self.ai_output.delete('1.0', tk.END)
+        self.ai_output.insert(tk.END, f"> Original command: {self.last_manual_command}\r\n")
+        if is_fix:
+            self.ai_output.insert(tk.END, "AI Corrected Command:\r\n")
+            self.update_status("AI correction received.")
+            self.push_to_device_btn.config(state=tk.NORMAL)
+        else:
+            self.ai_output.insert(tk.END, "AI Guidance:\r\n")
+            self.update_status("AI guidance received.")
+            self.push_to_device_btn.config(state=tk.DISABLED)
+        
+        self.ai_output.insert(tk.END, "------------------------\r\n")
+        self.ai_output.insert(tk.END, "\n".join(correction_or_guidance))
+        self.fix_command_btn.config(state=tk.DISABLED)
 
     def run_precheck(self):
         """Run precheck for serial connection - simplified for COM port usage"""
@@ -1014,15 +1368,21 @@ class NetApp(tk.Tk):
             manufacturer,
             self.model_entry.get(),
             self.ver_entry.get(),
-            self.use_web_search_var.get(),
-            self.ollama_model_combo.get(),
-            self.get_selected_gemini_model_full()
+            device_type=self.type_entry.get(),
+            running_config=self.running_config_text.get('1.0', tk.END),
+            use_web_search=self.use_web_search_var.get(),
+            ollama_model=self.ollama_model_combo.get(),
+            gemini_model=self.get_selected_gemini_model_full()
         )
         
         self.ai_output.insert(tk.END, "AI Generated Commands:\n")
         self.ai_output.insert(tk.END, "------------------------\n")
         self.ai_output.insert(tk.END, "\n".join(commands))
         self.update_status("AI response received.")
+
+        # Save successful, non-error commands to the database
+        if commands and not any("# AI Error:" in cmd for cmd in commands):
+            self._save_commands_to_db(manufacturer, user_request, commands)
 
     def chat_ask(self, event=None):
         """Chat: answer device info questions by querying backend; generate commands for changes."""
@@ -1042,6 +1402,17 @@ class NetApp(tk.Tk):
         change_words = ["add", "create", "remove", "delete", "modify", "change", "rename", "assign", "set"]
         mentions_vlan = "vlan" in lower or "vlans" in lower
         is_change = any(w in lower for w in change_words)
+
+        # --- Search local knowledge base first ---
+        kb_result = self._search_knowledge_base(text)
+        if kb_result:
+            guidance, category = kb_result
+            self.chat_log.insert(tk.END, f"AI: [From Local KB - '{category}']\n")
+            self.chat_log.insert(tk.END, "------------------------\n")
+            self.chat_log.insert(tk.END, guidance + "\n\n")
+            self.update_status("Answer found in local Knowledge Base.")
+            self.chat_log.see(tk.END)
+            return
 
         try:
             if mentions_vlan and not is_change:
@@ -1071,14 +1442,50 @@ class NetApp(tk.Tk):
             manufacturer,
             self.model_entry.get(),
             self.ver_entry.get(),
-            self.use_web_search_var.get(),
-            self.ollama_model_combo.get(),
-            self.get_selected_gemini_model_full()
+            device_type=self.type_entry.get(),
+            running_config=self.running_config_text.get('1.0', tk.END),
+            use_web_search=self.use_web_search_var.get(),
+            ollama_model=self.ollama_model_combo.get(),
+            gemini_model=self.get_selected_gemini_model_full(),
+            prompt_style='default'  # First, try to get commands
         )
-        self.chat_log.insert(tk.END, "AI: Proposed commands:\n")
-        for cmd in commands:
-            self.chat_log.insert(tk.END, cmd + "\n")
-        self.chat_log.insert(tk.END, "\n")
+
+        # If the first attempt returns an error, automatically switch to guidance mode and retry
+        if commands and commands[0].strip().startswith("# AI Error:"):
+            self.update_status("Request is complex, asking AI for guidance...")
+            self.chat_log.insert(tk.END, f"AI: {commands[0]}\n")
+            self.chat_log.insert(tk.END, "\nAI: The request is complex. Here is some general guidance:\n\n")
+
+            guidance_response = self.ai_provider.get_commands(
+                text,
+                manufacturer,
+                self.model_entry.get(),
+                self.ver_entry.get(),
+                device_type=self.type_entry.get(),
+                running_config=self.running_config_text.get('1.0', tk.END),
+                use_web_search=self.use_web_search_var.get(),
+                ollama_model=self.ollama_model_combo.get(),
+                gemini_model=self.get_selected_gemini_model_full(),
+                prompt_style='guidance'  # Retry in guidance mode
+            )
+            # Display guidance and clear the other panes as there are no commands to push
+            for line in guidance_response:
+                self.chat_log.insert(tk.END, line + "\n")
+            self.chat_log.insert(tk.END, "\n")
+            self.ai_output.delete('1.0', tk.END)
+            self.push_to_device_btn.config(state=tk.DISABLED)
+            self.last_chat_response = guidance_response # Save for KB
+
+        else:  # Success on the first try, we have commands
+            self.chat_log.insert(tk.END, "AI: Proposed commands:\n")
+            for cmd in commands:
+                self.chat_log.insert(tk.END, cmd + "\n")
+            self.chat_log.insert(tk.END, "\n")
+            self.last_chat_response = commands # Save for KB
+            # Save successful, non-error commands to the database
+            if commands and not any("# AI Error:" in cmd for cmd in commands):
+                self._save_commands_to_db(manufacturer, text, commands)
+
         # Mirror into AI output pane for optional push
         try:
             self.ai_output.delete('1.0', tk.END)
@@ -1090,6 +1497,39 @@ class NetApp(tk.Tk):
             pass
         self.chat_log.see(tk.END)
         self.update_status("Chat: commands generated")
+
+        self.fix_command_btn.config(state=tk.DISABLED) # Disable after use
+
+    def fetch_running_config(self):
+        if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:
+            messagebox.showerror("Error", "Not connected to any device.")
+            return
+
+        manufacturer = self.man_entry.get().lower().strip()
+        if not manufacturer:
+            messagebox.showerror("Input Error", "Manufacturer is required to fetch running config.")
+            return
+
+        # Determine the correct command
+        if manufacturer == 'h3c':
+            cmd = 'display current-configuration'
+        else:
+            # A common default for many vendors like Cisco, Arista
+            cmd = 'show running-config'
+
+        self.update_status(f"Fetching running-config with '{cmd}'...")
+        self.log_to_terminal(f"\n>>> Fetching running-config with '{cmd}'... (this may take a moment)", "info")
+        
+        try:
+            # Use a long timeout to capture the entire configuration
+            config = self.run_device_command(cmd, timeout=30)
+            self.running_config_text.delete('1.0', tk.END)
+            self.running_config_text.insert(tk.END, config)
+            self.update_status("Running config fetched successfully.")
+            self.log_to_terminal("Running config fetched and added to AI context.", "info")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to fetch running-config: {e}")
+            self.update_status("Failed to fetch running-config.")
 
     def fetch_device_info(self):
         if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:
@@ -1242,6 +1682,27 @@ class NetApp(tk.Tk):
             # Non-fatal; log and continue
             self.log_to_terminal(f"Profile persistence skipped: {e}", "error")
 
+    def save_chat_to_knowledge(self):
+        """Saves the last AI chat response to the knowledge base after asking for a category."""
+        if not self.last_chat_response:
+            messagebox.showinfo("Save to KB", "There is no AI response to save.")
+            return
+        manufacturer = self.man_entry.get().strip()
+        if not manufacturer:
+            messagebox.showerror("Input Error", "Manufacturer must be set to save to the knowledge base.")
+            return
+
+        category = simpledialog.askstring("Save to Knowledge Base", "Enter a category for this information:")
+        if not category or not category.strip():
+            messagebox.showinfo("Save to KB", "Save cancelled because no category was provided.")
+            return
+        
+        try:
+            self._save_knowledge_to_db(manufacturer, category.strip(), self.last_chat_response)
+            messagebox.showinfo("Success", f"Saved to knowledge base under category: '{category.strip()}'")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save to knowledge base: {e}")
+
     def set_ai_provider(self):
         provider = self.ai_provider_combo.get()
         api_key = self.api_key_entry.get()
@@ -1258,45 +1719,88 @@ class NetApp(tk.Tk):
             return
         
         commands_text = self.ai_output.get("1.0", tk.END)
-        lines = commands_text.split("------------------------\n")
+        lines = commands_text.split("------------------------\r\n")
         if len(lines) < 2:
             messagebox.showinfo("Info", "No commands to push.")
             return
         
-        commands_to_push = [cmd.strip() for cmd in lines[1].strip().split("\n") if cmd.strip() and not cmd.startswith("#")]
+        original_commands = [cmd.strip() for cmd in lines[1].strip().split("\n") if cmd.strip() and not cmd.startswith("#")]
         
-        if not commands_to_push:
+        if not original_commands:
             messagebox.showinfo("Info", "No valid commands found to push.")
             return
 
-        self.log_to_terminal(f"\n>>> Pushing {len(commands_to_push)} commands from AI Assistant...", "info")
-        self.update_status(f"Sending {len(commands_to_push)} commands...")
+        self.log_to_terminal(f"\n>>> Pushing {len(original_commands)} commands from AI Assistant...", "info")
+        self.update_status(f"Sending {len(original_commands)} commands...")
         self.update_idletasks()
-        
+
+        self._pause_serial_reader()
         try:
-            for cmd in commands_to_push:
+            correction_failed_permanently = False
+            for cmd in original_commands:
                 self.log_to_terminal(f"\n> {cmd}", "command")
-                # Send command via serial connection
                 self.connection.write((cmd + '\r\n').encode())
                 
-                # Read response (with timeout)
                 response = ""
                 start_time = time.time()
-                while time.time() - start_time < 3:  # 3 second timeout per command
+                while time.time() - start_time < 3:
                     if self.connection.in_waiting > 0:
                         response += self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
                     time.sleep(0.1)
                 
                 if response:
                     self.log_to_terminal(response, "output")
-                else:
-                    self.log_to_terminal("No response received", "info")
+
+                if self._is_cli_error(response):
+                    self.log_to_terminal("--- ERROR DETECTED! Attempting automatic correction... ---", "error")
                     
+                    correction_list = self._get_ai_correction(cmd, response)
+
+                    is_fix = not (correction_list and correction_list[0].strip().startswith("#"))
+
+                    if not is_fix:
+                        self.log_to_terminal("--- AI could not find a correction. Halting command push. ---", "error")
+                        self.ai_output.delete('1.0', tk.END)
+                        self.ai_output.insert(tk.END, "AI could not determine a fix. Last response:\n" + "\n".join(correction_list))
+                        break
+
+                    self.log_to_terminal(f"--- AI suggests correction: {' '.join(correction_list)} ---", "info")
+                    
+                    correction_succeeded = True
+                    for fix_cmd in correction_list:
+                        self.log_to_terminal(f"\n> {fix_cmd} (auto-correction)", "command")
+                        self.connection.write((fix_cmd + '\r\n').encode())
+                        fix_response = ""
+                        fix_start_time = time.time()
+                        while time.time() - fix_start_time < 3:
+                            if self.connection.in_waiting > 0:
+                                fix_response += self.connection.read(self.connection.in_waiting).decode('utf-8', errors='ignore')
+                            time.sleep(0.1)
+                        
+                        if fix_response:
+                            self.log_to_terminal(fix_response, "output")
+
+                        if self._is_cli_error(fix_response):
+                            self.log_to_terminal("--- AI CORRECTION FAILED! Halting command push. ---", "error")
+                            messagebox.showerror("Correction Failed", "The AI-suggested correction also failed. Halting all operations.")
+                            correction_succeeded = False
+                            correction_failed_permanently = True
+                            break
+                    
+                    if correction_failed_permanently:
+                        break
+
+                    if correction_succeeded:
+                        self.log_to_terminal("--- Correction successful. Continuing with next command. ---", "info")
+                        self._save_correction_to_db(cmd, '\n'.join(correction_list))
+            
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send commands: {str(e)}")
             self.log_to_terminal(f"Error sending commands: {str(e)}", "error")
+        finally:
+            self._resume_serial_reader()
             
-        self.update_status("Commands sent. Ready.")
+        self.update_status("Command push finished or was halted by an error.")
 
     def log_to_terminal(self, message, tag=None):
         self.terminal.tag_config("info", foreground="cyan")
@@ -1340,8 +1844,25 @@ class NetApp(tk.Tk):
 
     def load_profiles(self):
         if os.path.exists(self.profiles_file):
-            with open(self.profiles_file, 'r') as f:
-                self.profiles = json.load(f)
+            try:
+                with open(self.profiles_file, 'r') as f:
+                    self.profiles = json.load(f)
+            except json.JSONDecodeError:
+                backup_file = self.profiles_file + '.bak'
+                try:
+                    os.rename(self.profiles_file, backup_file)
+                    messagebox.showwarning(
+                        "Profile Load Error",
+                        f"The profile file '{self.profiles_file}' was corrupted.\n\n"
+                        f"It has been renamed to '{backup_file}'.\n"
+                        "The application will start with fresh profiles."
+                    )
+                except Exception as e:
+                    messagebox.showerror(
+                        "Profile Load Error",
+                        f"The profile file '{self.profiles_file}' is corrupted and a backup could not be created: {e}"
+                    )
+                self.profiles = {}
         self.update_profile_list()
 
     def update_profile_list(self):
@@ -1358,7 +1879,9 @@ class NetApp(tk.Tk):
             self.com_port_combo.set(profile.get('com_port', ''))
             self.user_entry.delete(0, tk.END); self.user_entry.insert(0, profile.get('username', ''))
             self.pass_entry.delete(0, tk.END); self.pass_entry.insert(0, profile.get('password', ''))
+            self.enable_pass_entry.delete(0, tk.END); self.enable_pass_entry.insert(0, profile.get('enable_password', ''))
             self.man_entry.delete(0, tk.END); self.man_entry.insert(0, profile.get('manufacturer', ''))
+            self.type_entry.delete(0, tk.END); self.type_entry.insert(0, profile.get('device_type', ''))
             self.model_entry.delete(0, tk.END); self.model_entry.insert(0, profile.get('model', ''))
             self.ver_entry.delete(0, tk.END); self.ver_entry.insert(0, profile.get('version', ''))
             self.update_status(f"Loaded profile: {profile_name}")
@@ -1370,7 +1893,9 @@ class NetApp(tk.Tk):
                 'com_port': self.com_port_combo.get(),
                 'username': self.user_entry.get(),
                 'password': self.pass_entry.get(),
+                'enable_password': self.enable_pass_entry.get(),
                 'manufacturer': self.man_entry.get(),
+                'device_type': self.type_entry.get(),
                 'model': self.model_entry.get(),
                 'version': self.ver_entry.get()
             }
@@ -1379,6 +1904,53 @@ class NetApp(tk.Tk):
             self.update_profile_list()
             self.profile_combo.set(profile_name)
             self.update_status(f"Saved profile: {profile_name}")
+
+    def update_profile(self):
+        profile_name = self.profile_combo.get()
+        if not profile_name:
+            messagebox.showerror("Error", "No profile selected to update.")
+            return
+
+        if messagebox.askyesno("Confirm Update", f"Are you sure you want to overwrite the profile '{profile_name}'?"):
+            self.profiles[profile_name] = {
+                'com_port': self.com_port_combo.get(),
+                'username': self.user_entry.get(),
+                'password': self.pass_entry.get(),
+                'enable_password': self.enable_pass_entry.get(),
+                'manufacturer': self.man_entry.get(),
+                'device_type': self.type_entry.get(),
+                'model': self.model_entry.get(),
+                'version': self.ver_entry.get()
+            }
+            with open(self.profiles_file, 'w') as f:
+                json.dump(self.profiles, f, indent=4)
+            self.update_status(f"Updated profile: {profile_name}")
+            messagebox.showinfo("Success", f"Profile '{profile_name}' has been updated.")
+
+    def _search_knowledge_base(self, query):
+        """Searches the local KB for an answer before asking the AI."""
+        if not self.db_conn:
+            return None
+        manufacturer = self.man_entry.get().strip()
+        if not manufacturer:
+            return None
+        
+        try:
+            cursor = self.db_conn.cursor()
+            # Simple search: look for keywords in the category
+            # A more advanced search could use full-text search or keyword tokenization
+            search_term = f"%{query}%"
+            cursor.execute(
+                "SELECT guidance_text, category FROM command_knowledge WHERE manufacturer = ? AND category LIKE ? ORDER BY length(category) ASC LIMIT 1",
+                (manufacturer, search_term)
+            )
+            result = cursor.fetchone()
+            if result:
+                return result # Returns (guidance_text, category)
+        except Exception as e:
+            self.log_to_terminal(f"Knowledge base search failed: {e}", "error")
+        
+        return None
 
     def delete_profile(self):
         profile_name = self.profile_combo.get()
@@ -1392,6 +1964,91 @@ class NetApp(tk.Tk):
                     entry.delete(0, tk.END)
                 self.update_profile_list()
                 self.update_status(f"Deleted profile: {profile_name}")
+
+    def enter_enable_mode(self):
+        if not self.connection or not getattr(self, "is_connected", False):
+            messagebox.showerror("Error", "Not connected to any device.")
+            return
+        
+        enable_password = self.enable_pass_entry.get()
+        if not enable_password:
+            messagebox.showinfo("Info", "No Enable Password has been set.")
+            return
+
+        try:
+            # Send 'enable' command
+            self.log_to_terminal("\n> enable\r\n", "command")
+            self.connection.write(b"enable\r\n")
+            # Wait a moment for the password prompt
+            time.sleep(0.5)
+            # Send the enable password
+            self.log_to_terminal("> ********\r\n", "command") # Echo masked password
+            self.connection.write((enable_password + "\r\n").encode())
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send enable commands: {e}")
+
+    def show_knowledge_base_window(self):
+        kb_window = tk.Toplevel(self)
+        kb_window.title("Knowledge Base Browser")
+        kb_window.geometry("800x600")
+
+        top_frame = tk.Frame(kb_window)
+        top_frame.pack(fill='x', padx=10, pady=5)
+        tk.Button(top_frame, text="Refresh", command=lambda: self._populate_kb_viewer(tree)).pack(side=tk.LEFT)
+
+        pane = tk.PanedWindow(kb_window, orient=tk.VERTICAL, sashrelief=tk.RAISED)
+        pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        tree_frame = tk.Frame(pane)
+        tree = ttk.Treeview(tree_frame, columns=("ID", "Manufacturer", "Category", "Timestamp"), show='headings')
+        tree.heading("ID", text="ID")
+        tree.heading("Manufacturer", text="Manufacturer")
+        tree.heading("Category", text="Category")
+        tree.heading("Timestamp", text="Timestamp")
+        tree.column("ID", width=50, stretch=tk.NO)
+        tree.column("Manufacturer", width=100)
+        tree.column("Category", width=200)
+        tree.column("Timestamp", width=150)
+        
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill='y')
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        pane.add(tree_frame, height=250)
+
+        text_frame = tk.Frame(pane)
+        kb_text = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, font=("Consolas", 10))
+        kb_text.pack(fill=tk.BOTH, expand=True)
+        pane.add(text_frame)
+
+        tree.selection_data = {}
+        tree.bind("<<TreeviewSelect>>", lambda event: self._on_kb_select(event, tree, kb_text))
+
+        self._populate_kb_viewer(tree)
+
+    def _populate_kb_viewer(self, tree):
+        if not self.db_conn:
+            messagebox.showerror("DB Error", "Database connection is not available.")
+            return
+        # Clear existing items
+        for i in tree.get_children():
+            tree.delete(i)
+        tree.selection_data = {}
+        
+        cursor = self.db_conn.cursor()
+        cursor.execute("SELECT id, manufacturer, category, timestamp, guidance_text FROM command_knowledge ORDER BY timestamp DESC")
+        for row in cursor.fetchall():
+            item_id = tree.insert("", tk.END, values=row[:4])
+            tree.selection_data[item_id] = row[4] # Store guidance_text
+
+    def _on_kb_select(self, event, tree, text_widget):
+        try:
+            selected_item = tree.selection()[0]
+            guidance = tree.selection_data.get(selected_item, "")
+            text_widget.delete('1.0', tk.END)
+            text_widget.insert(tk.END, guidance)
+        except IndexError:
+            pass # Ignore empty selection
 
 if __name__ == "__main__":
     app = NetApp()

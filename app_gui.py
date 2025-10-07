@@ -546,6 +546,9 @@ class NetApp(tk.Tk):
         self.chat_input.pack(side=tk.LEFT, fill="x", expand=True)
         self.chat_input.bind("<Return>", self.chat_ask)
         tk.Button(chat_input_frame, text="Send", command=self.chat_ask).pack(side=tk.LEFT, padx=6)
+        # Option to append running config to chat queries for exact-device context
+        self.append_rc_to_chat_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(chat_input_frame, text="Append Running Config", variable=self.append_rc_to_chat_var).pack(side=tk.LEFT, padx=6)
         tk.Button(chat_input_frame, text="Save to KB", command=self.save_chat_to_knowledge).pack(side=tk.LEFT, padx=6)
 
         # Favor Chat side for visibility: ~35% AI Assistant, ~65% Chat
@@ -1886,6 +1889,17 @@ class NetApp(tk.Tk):
         if not text:
             return
         self.chat_log.insert(tk.END, f"You: {text}\n")
+        # If requested, append current running config to the query for exact-device context
+        try:
+            if getattr(self, 'append_rc_to_chat_var', None) and self.append_rc_to_chat_var.get():
+                rc_text = (self.running_config_text.get('1.0', tk.END) if hasattr(self, 'running_config_text') else '').strip()
+                if rc_text:
+                    # Limit size to keep prompt manageable
+                    rc_text = rc_text[:50000]
+                    text = f"{text}\n\nRUNNING_CONFIG_CONTEXT_BEGIN\n{rc_text}\nRUNNING_CONFIG_CONTEXT_END"
+                    self.chat_log.insert(tk.END, "(Context: running config appended to query)\n")
+        except Exception:
+            pass
         self.chat_input.delete(0, tk.END)
 
         manufacturer = (self.man_entry.get() or '').strip()

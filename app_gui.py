@@ -738,6 +738,18 @@ class NetApp(tk.Tk):
                     commands_text TEXT NOT NULL
                 )
             ''')
+            # Hierarchical command tree discovered via recursive '?' exploration
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS command_tree (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    manufacturer TEXT NOT NULL,
+                    command_path TEXT NOT NULL,
+                    context TEXT,
+                    raw_output TEXT,
+                    UNIQUE(manufacturer, command_path)
+                )
+            ''')
             self.db_conn.commit()
             self.log_to_terminal("Local command cache database initialized.", "info")
         except Exception as e:
@@ -758,6 +770,54 @@ class NetApp(tk.Tk):
             self.log_to_terminal("Available commands appended to CLI DB.", "info")
         except Exception as e:
             self.log_to_terminal(f"Failed to save available commands: {e}", "error")
+
+    def _save_command_branch_to_db(self, manufacturer, command_path, context, raw_output):
+        """Save a discovered command branch (command path and its '?' output) into the hierarchical command tree."""
+        if not self.db_conn or not manufacturer or not command_path:
+            return
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO command_tree (manufacturer, command_path, context, raw_output) VALUES (?, ?, ?, ?)",
+                (manufacturer, command_path, context or '', raw_output or '')
+            )
+            self.db_conn.commit()
+        except Exception as e:
+            self.log_to_terminal(f"Failed to save command branch: {e}", "error")
+
+    def _parse_help_tokens(self, help_text):
+        """Parse CLI help ('?') output to extract possible next tokens/keywords.
+
+        Heuristics:
+        - Take the first word-like token per line (letters, digits, underscore, hyphen)
+        - Ignore placeholders like '<...>' or '[...]'
+        - Skip obvious non-command lines (e.g., 'More', banners)
+        """
+        tokens = []
+        if not help_text:
+            return tokens
+        try:
+            for line in help_text.splitlines():
+                s = line.strip()
+                if not s:
+                    continue
+                # Skip pager lines and separators
+                if re.search(r"-{2,}\s*More|-{2,}", s, re.IGNORECASE):
+                    continue
+                # Ignore placeholder lines
+                if s.startswith('<') or s.startswith('['):
+                    continue
+                m = re.match(r"^([A-Za-z][A-Za-z0-9_-]*)", s)
+                if m:
+                    tok = m.group(1)
+                    # Filter overly generic or prompt-like artifacts
+                    if tok.lower() in {"more", "usage", "help"}:
+                        continue
+                    if tok not in tokens:
+                        tokens.append(tok)
+        except Exception:
+            pass
+        return tokens
 
     def _save_commands_to_db(self, manufacturer, request, commands):
         """Save a generated command set to the database."""
@@ -846,11 +906,103 @@ class NetApp(tk.Tk):
                 "Port-Channel": "a comprehensive guide to all common commands for configuring Link Aggregation Groups (LAGs) or Port-Channels."
             }
 
-            # Seed: expand fetched '?' commands using web search for comprehensive options
+            # Seed: expand fetched '?' commands using CLI and web search for comprehensive options
             try:
                 available_text = self.available_commands_text.get('1.0', tk.END).strip()
             except Exception:
                 available_text = ''
+
+            # If we don't have '?' text yet, try to fetch directly from the device
+            if not available_text:
+                try:
+                    self.log_to_terminal("Fetching '?' help from device for expansion seed...", "info")
+                    available_text = self.run_device_command('?', timeout=12)
+                except Exception:
+                    available_text = ''
+
+            # Determine context from prompt for saving branches
+            try:
+                last_line = self.terminal.get("end-2l", "end-1l").strip()
+                context_guess = ""
+                if last_line.startswith('[') and last_line.endswith(']'):
+                    context_guess = "System View"
+                elif last_line.startswith('<') and last_line.endswith('>'):
+                    context_guess = "User View"
+                else:
+                    context_guess = "Unknown"
+            except Exception:
+                context_guess = "Unknown"
+
+            # --- Recursively expand commands via CLI '?' and save to DB ---
+            def _expand_cli_commands(manuf, seed_text):
+                # Discover top-level tokens
+                tokens = self._parse_help_tokens(seed_text)
+                # Fallback: try 'display ?' or 'show ?' based on platform
+                if not tokens:
+                    try:
+                        if manuf.lower() == 'h3c':
+                            t = self.run_device_command('display ?', timeout=6)
+                        else:
+                            t = self.run_device_command('show ?', timeout=6)
+                        tokens = self._parse_help_tokens(t)
+                        # Save the top-level branch itself
+                        self._save_command_branch_to_db(manuf, 'display' if manuf.lower()=='h3c' else 'show', context_guess, t)
+                    except Exception:
+                        pass
+
+                if not tokens:
+                    return
+
+                visited = set()
+                max_depth = 4
+                queue = []
+                for tok in tokens:
+                    path = [tok]
+                    queue.append(path)
+
+                while queue:
+                    path = queue.pop(0)
+                    cmd_path = ' '.join(path)
+                    # Avoid duplicate exploration
+                    if cmd_path in visited:
+                        continue
+                    visited.add(cmd_path)
+
+                    # Query '?' for the current path
+                    try:
+                        help_out = self.run_device_command(f"{cmd_path} ?", timeout=8)
+                    except Exception:
+                        help_out = ''
+
+                    # Persist branch with raw help output
+                    try:
+                        self._save_command_branch_to_db(manuf, cmd_path, context_guess, help_out)
+                    except Exception:
+                        pass
+
+                    # If depth limit reached, don't expand further
+                    if len(path) >= max_depth:
+                        continue
+
+                    # Parse next tokens from this help
+                    next_tokens = self._parse_help_tokens(help_out)
+                    # Limit branching to avoid explosion
+                    next_tokens = next_tokens[:50]
+                    for nt in next_tokens:
+                        new_path = path + [nt]
+                        new_cmd = ' '.join(new_path)
+                        if new_cmd not in visited:
+                            queue.append(new_path)
+                    # Small delay to avoid flooding device
+                    time.sleep(0.2)
+
+            try:
+                self.log_to_terminal("Starting CLI '?' expansion to build command tree...", "info")
+                self.update_status("Building DB: Expanding CLI commands...")
+                _expand_cli_commands(manufacturer, available_text)
+                self.log_to_terminal("CLI command tree expansion complete.", "info")
+            except Exception as e:
+                self.log_to_terminal(f"CLI expansion failed: {e}", "error")
 
             for category, question in topics.items():
                 full_request = f"For a {manufacturer} device, provide {question}"

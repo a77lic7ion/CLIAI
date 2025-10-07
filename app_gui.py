@@ -10,6 +10,14 @@ import time
 import threading
 import queue
 import sqlite3
+try:
+    import telnetlib
+except Exception:
+    telnetlib = None
+try:
+    from netmiko import ConnectHandler
+except Exception:
+    ConnectHandler = None
 
 # --- AI Provider Integration ---
 try:
@@ -43,6 +51,83 @@ MANUFACTURER_TO_DEVICE_TYPE = {
     "juniper": "juniper_junos",
     "arista": "arista_eos",
 }
+
+class TelnetAdapter:
+    def __init__(self, host: str, port: int):
+        if telnetlib is None:
+            raise RuntimeError("telnetlib is not available; cannot use Telnet")
+        self._tn = telnetlib.Telnet(host, port)
+        self._buf = b""
+
+    def write(self, data: bytes):
+        if isinstance(data, str):
+            data = data.encode("utf-8", errors="ignore")
+        self._tn.write(data)
+
+    def _capture(self):
+        try:
+            chunk = self._tn.read_very_eager()
+            if chunk:
+                self._buf += chunk
+        except Exception:
+            pass
+
+    @property
+    def in_waiting(self):
+        self._capture()
+        return len(self._buf)
+
+    def read(self, n: int):
+        if not self._buf:
+            self._capture()
+        data = self._buf[:n]
+        self._buf = self._buf[n:]
+        return data
+
+    def close(self):
+        try:
+            self._tn.close()
+        except Exception:
+            pass
+
+class NetmikoAdapter:
+    def __init__(self, **kwargs):
+        if ConnectHandler is None:
+            raise RuntimeError("netmiko is not available; cannot use SSH")
+        self._conn = ConnectHandler(**kwargs)
+        self._buf = b""
+
+    def write(self, data: bytes):
+        if isinstance(data, bytes):
+            data = data.decode("utf-8", errors="ignore")
+        self._conn.write_channel(data)
+        self._capture()
+
+    def _capture(self):
+        try:
+            s = self._conn.read_channel()
+            if s:
+                self._buf += s.encode("utf-8", errors="ignore")
+        except Exception:
+            pass
+
+    @property
+    def in_waiting(self):
+        self._capture()
+        return len(self._buf)
+
+    def read(self, n: int):
+        if not self._buf:
+            self._capture()
+        data = self._buf[:n]
+        self._buf = self._buf[n:]
+        return data
+
+    def close(self):
+        try:
+            self._conn.disconnect()
+        except Exception:
+            pass
 
 class AIProvider:
     def __init__(self):
@@ -338,6 +423,15 @@ class NetApp(tk.Tk):
         self.profile_combo = ttk.Combobox(conn_frame, state="readonly")
         self.profile_combo.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
         self.profile_combo.bind("<<ComboboxSelected>>", self.load_selected_profile)
+        # Connection type selector (Serial/SSH/Telnet)
+        tk.Label(conn_frame, text="Conn Type:").grid(row=0, column=4, padx=5, pady=5, sticky="w")
+        self.conn_type_var = tk.StringVar(value="Serial")
+        self.conn_type_combo = ttk.Combobox(conn_frame, state="readonly", values=["Serial", "SSH", "Telnet"], textvariable=self.conn_type_var, width=10)
+        self.conn_type_combo.grid(row=0, column=5, padx=5, pady=5, sticky="w")
+        try:
+            self.conn_type_combo.bind("<<ComboboxSelected>>", self.on_conn_type_change)
+        except Exception:
+            pass
         tk.Label(conn_frame, text="COM Port:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
         self.com_port_combo = ttk.Combobox(conn_frame, state="readonly")
         self.com_port_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
@@ -361,6 +455,13 @@ class NetApp(tk.Tk):
         tk.Label(conn_frame, text="Enable Pass:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
         self.enable_pass_entry = tk.Entry(conn_frame, show="*")
         self.enable_pass_entry.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        # Network connection fields (used for SSH/Telnet)
+        tk.Label(conn_frame, text="Host:").grid(row=3, column=2, padx=5, pady=5, sticky="w")
+        self.host_entry = tk.Entry(conn_frame)
+        self.host_entry.grid(row=3, column=3, padx=5, pady=5, sticky="ew")
+        tk.Label(conn_frame, text="Port:").grid(row=3, column=4, padx=5, pady=5, sticky="w")
+        self.port_entry = tk.Entry(conn_frame, width=6)
+        self.port_entry.grid(row=3, column=5, padx=5, pady=5, sticky="w")
 
         self.connect_btn = tk.Button(conn_frame, text="Connect", command=self.toggle_connection)
         self.connect_btn.grid(row=4, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
@@ -389,8 +490,15 @@ class NetApp(tk.Tk):
         try:
             self.term_input = tk.Entry(term_input_frame, font=("Consolas", 10))
             self.term_input.pack(side=tk.LEFT, fill="x", expand=True)
+            # Allow pressing Return to send the typed command from the input field
+            try:
+                self.term_input.bind("<Return>", self.send_terminal_input)
+            except Exception:
+                pass
             tk.Button(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=6)
             tk.Button(term_input_frame, text="Send RETURN", command=self.send_enter_key).pack(side=tk.LEFT, padx=6)
+            # New help button: sends a space then '?' and presses return
+            tk.Button(term_input_frame, text="?", command=self.send_space_then_question).pack(side=tk.LEFT, padx=6)
             tk.Button(term_input_frame, text="Quit", command=self.send_quit_command).pack(side=tk.LEFT, padx=6)
         except Exception:
             pass
@@ -1088,6 +1196,22 @@ class NetApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to refresh COM ports: {str(e)}")
 
+    def on_conn_type_change(self, event=None):
+        """Set sensible defaults for port based on connection type."""
+        try:
+            ctype = (self.conn_type_var.get() or 'Serial').strip()
+            if ctype == 'SSH':
+                self.port_entry.delete(0, tk.END)
+                self.port_entry.insert(0, '22')
+            elif ctype == 'Telnet':
+                self.port_entry.delete(0, tk.END)
+                self.port_entry.insert(0, '23')
+            else:
+                # Serial: clear host/port to avoid confusion
+                self.port_entry.delete(0, tk.END)
+        except Exception:
+            pass
+
     def get_selected_gemini_model_full(self):
         sel = getattr(self, 'gemini_model_combo', None)
         if not sel:
@@ -1476,6 +1600,21 @@ class NetApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send ENTER: {e}")
 
+    def send_space_then_question(self):
+        """Sends a space, then '?' and presses RETURN to request CLI help."""
+        try:
+            if not self.connection or not getattr(self, "is_connected", False):
+                messagebox.showerror("Error", "Not connected to any device.")
+                return
+            # Echo to terminal for user feedback
+            self.log_to_terminal("\n>  ?", "command")
+            # Send a space, then '?' followed by CRLF
+            self.connection.write(b' ')
+            time.sleep(0.02)
+            self.connection.write(b'?\r\n')
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send '?': {e}")
+
     def send_quit_command(self):
         """Go back one mode step using vendor-aware command.
 
@@ -1593,40 +1732,79 @@ class NetApp(tk.Tk):
             self._resume_serial_reader()
 
     def connect(self):
-        com_port = self.com_port_combo.get()
-        try:
-            baudrate = int(self.baud_combo.get()) if hasattr(self, 'baud_combo') and self.baud_combo.get() else 9600
-        except Exception:
-            baudrate = 9600
+        ctype = (self.conn_type_var.get() or 'Serial').strip()
         username = self.user_entry.get()
         password = self.pass_entry.get()
-        
-        if not com_port:
-            messagebox.showerror("Error", "Please select a COM port")
+
+        if ctype == 'Serial':
+            com_port = self.com_port_combo.get()
+            try:
+                baudrate = int(self.baud_combo.get()) if hasattr(self, 'baud_combo') and self.baud_combo.get() else 9600
+            except Exception:
+                baudrate = 9600
+            if not com_port:
+                messagebox.showerror("Error", "Please select a COM port")
+                return
+            self.set_busy(True, f"Connecting to {com_port}…")
+            try:
+                # Create serial connection
+                self.connection = serial.Serial(
+                    port=com_port,
+                    baudrate=baudrate,
+                    timeout=0,
+                    write_timeout=3
+                )
+                self.connection.reset_input_buffer()
+                self.connection.reset_output_buffer()
+                self.is_connected = True
+                self.connect_btn.config(text="Disconnect")
+                self.log_to_terminal(f"Connected to {com_port}")
+                self.update_status(f"Connected to {com_port}")
+                self.run_precheck()
+                self._resume_serial_reader()
+            except Exception as e:
+                messagebox.showerror("Connection Error", f"Failed to connect to {com_port}: {str(e)}")
+            finally:
+                self.set_busy(False)
             return
-        
-        self.set_busy(True, f"Connecting to {com_port}…")
+
+        # Network connection path
+        host = (self.host_entry.get() or '').strip()
+        port_val = (self.port_entry.get() or '').strip()
+        port = None
         try:
-            # Create serial connection
-            self.connection = serial.Serial(
-                port=com_port,
-                baudrate=baudrate,
-                timeout=0,          # Non-blocking reads
-                write_timeout=3      # Give writes more time
-            )
-            # Clear buffers and start reader
-            self.connection.reset_input_buffer()
-            self.connection.reset_output_buffer()
-            
+            port = int(port_val) if port_val else (22 if ctype == 'SSH' else 23)
+        except Exception:
+            port = 22 if ctype == 'SSH' else 23
+        if not host:
+            messagebox.showerror("Error", "Please enter a host for network connection")
+            return
+
+        self.set_busy(True, f"Connecting to {ctype} {host}:{port}…")
+        try:
+            if ctype == 'Telnet':
+                self.connection = TelnetAdapter(host, port)
+            else:
+                manufacturer = (self.man_entry.get() or '').strip().lower()
+                device_type = MANUFACTURER_TO_DEVICE_TYPE.get(manufacturer, 'cisco_ios')
+                nm_kwargs = {
+                    'device_type': device_type,
+                    'host': host,
+                    'username': username,
+                    'password': password,
+                    'port': port,
+                    'fast_cli': False,
+                }
+                self.connection = NetmikoAdapter(**nm_kwargs)
+
             self.is_connected = True
             self.connect_btn.config(text="Disconnect")
-            self.log_to_terminal(f"Connected to {com_port}")
-            self.update_status(f"Connected to {com_port}")
+            self.log_to_terminal(f"Connected to {ctype} {host}:{port}")
+            self.update_status(f"Connected to {ctype} {host}:{port}")
             self.run_precheck()
             self._resume_serial_reader()
-            
         except Exception as e:
-            messagebox.showerror("Connection Error", f"Failed to connect to {com_port}: {str(e)}")
+            messagebox.showerror("Connection Error", f"Failed to connect via {ctype}: {str(e)}")
         finally:
             self.set_busy(False)
 
@@ -2966,6 +3144,19 @@ class NetApp(tk.Tk):
             self.pass_entry.delete(0, tk.END); self.pass_entry.insert(0, profile.get('password', ''))
             self.enable_pass_entry.delete(0, tk.END); self.enable_pass_entry.insert(0, profile.get('enable_password', ''))
             self.man_entry.delete(0, tk.END); self.man_entry.insert(0, profile.get('manufacturer', ''))
+            # New: connection type, host, and port
+            try:
+                self.conn_type_var.set(profile.get('conn_type', self.conn_type_var.get() or 'Serial'))
+            except Exception:
+                pass
+            try:
+                self.host_entry.delete(0, tk.END); self.host_entry.insert(0, profile.get('host', ''))
+            except Exception:
+                pass
+            try:
+                self.port_entry.delete(0, tk.END); self.port_entry.insert(0, str(profile.get('port', '')))
+            except Exception:
+                pass
             self.type_entry.delete(0, tk.END); self.type_entry.insert(0, profile.get('device_type', ''))
             self.model_entry.delete(0, tk.END); self.model_entry.insert(0, profile.get('model', ''))
             self.ver_entry.delete(0, tk.END); self.ver_entry.insert(0, profile.get('version', ''))
@@ -2994,7 +3185,11 @@ class NetApp(tk.Tk):
                 'model': self.model_entry.get(),
                 'version': self.ver_entry.get(),
                 'running_config': self.running_config_text.get('1.0', tk.END),
-                'available_commands': self.available_commands_text.get('1.0', tk.END)
+                'available_commands': self.available_commands_text.get('1.0', tk.END),
+                # New network fields
+                'conn_type': self.conn_type_var.get(),
+                'host': self.host_entry.get(),
+                'port': int(self.port_entry.get() or '0') if (self.port_entry.get() or '').strip().isdigit() else (self.port_entry.get() or '')
             }
             with open(self.profiles_file, 'w') as f:
                 json.dump(self.profiles, f, indent=4)
@@ -3019,7 +3214,10 @@ class NetApp(tk.Tk):
                 'model': self.model_entry.get(),
                 'version': self.ver_entry.get(),
                 'running_config': self.running_config_text.get('1.0', tk.END),
-                'available_commands': self.available_commands_text.get('1.0', tk.END)
+                'available_commands': self.available_commands_text.get('1.0', tk.END),
+                'conn_type': self.conn_type_var.get(),
+                'host': self.host_entry.get(),
+                'port': int(self.port_entry.get() or '0') if (self.port_entry.get() or '').strip().isdigit() else (self.port_entry.get() or '')
             }
             with open(self.profiles_file, 'w') as f:
                 json.dump(self.profiles, f, indent=4)
@@ -3059,8 +3257,12 @@ class NetApp(tk.Tk):
                 del self.profiles[profile_name]
                 with open(self.profiles_file, 'w') as f: json.dump(self.profiles, f, indent=4)
                 self.com_port_combo.set('')
-                for entry in [self.user_entry, self.pass_entry, self.man_entry, self.model_entry, self.ver_entry]:
+                for entry in [self.user_entry, self.pass_entry, self.man_entry, self.model_entry, self.ver_entry, self.host_entry, self.port_entry]:
                     entry.delete(0, tk.END)
+                try:
+                    self.conn_type_var.set('Serial')
+                except Exception:
+                    pass
                 self.update_profile_list()
                 self.update_status(f"Deleted profile: {profile_name}")
 

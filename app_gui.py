@@ -30,12 +30,11 @@ try:
     from openai import OpenAI
 except ImportError:
     OpenAI = None
+# Mistral SDK v1: unified client
 try:
-    from mistralai.client import MistralClient
-    from mistralai.models.chat_completion import ChatMessage
+    from mistralai import Mistral
 except ImportError:
-    MistralClient = None
-    ChatMessage = None
+    Mistral = None
 try:
     import anthropic
 except ImportError:
@@ -148,8 +147,8 @@ class AIProvider:
                 self.client = OpenAI(api_key=self.api_key)
             elif self.provider == "Ollama" and ollama:
                 self.client = ollama.Client(host='http://localhost:11434' )
-            elif self.provider == "Mistral" and MistralClient:
-                self.client = MistralClient(api_key=self.api_key)
+            elif self.provider == "Mistral" and Mistral:
+                self.client = Mistral(api_key=self.api_key)
             elif self.provider == "Claude" and anthropic:
                 self.client = anthropic.Anthropic(api_key=self.api_key)
         except Exception as e:
@@ -319,38 +318,21 @@ class AIProvider:
                 return chat_completion.choices.message.content.strip().split('\n')
 
             elif self.provider == "Mistral":
-                if not MistralClient: return ["# Mistral library not installed."]
+                if not Mistral: return ["# Mistral library not installed."]
                 if not self.client: return ["# Mistral client not initialized. Set provider again."]
-                messages = []
-                if ChatMessage:
-                    messages = [
-                        ChatMessage(role="system", content=system_prompt),
-                        ChatMessage(role="user", content=user_request),
-                    ]
-                else:
-                    messages = [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_request},
-                    ]
-                response = self.client.chat(model="mistral-large-latest", messages=messages)
-                content = ""
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_request},
+                ]
+                response = self.client.chat.complete(
+                    model="mistral-large-latest",
+                    messages=messages,
+                )
                 try:
-                    choice = response.choices[0]
-                    msg = getattr(choice, "message", None)
-                    if msg is not None and hasattr(msg, "content"):
-                        cont = msg.content
-                        if isinstance(cont, str):
-                            content = cont
-                        elif isinstance(cont, list):
-                            # Newer SDK returns list of blocks
-                            content = "".join(getattr(block, "text", "") for block in cont)
-                        else:
-                            content = str(cont)
-                    else:
-                        content = str(response)
+                    content = response.choices[0].message.content
                 except Exception:
                     content = str(response)
-                return [line for line in content.strip().split('\n')]
+                return [line for line in (content or "").strip().split('\n')]
 
             elif self.provider == "Claude":
                 if not anthropic: return ["# Anthropic library not installed."]
@@ -504,9 +486,12 @@ class NetApp(ctk.CTk):
         # Use CustomTkinter textbox for better theming and resizing
         self.terminal = ctk.CTkTextbox(terminal_frame)
         try:
-            self.terminal.configure(wrap='word', font=("Consolas", 10))
+            self.terminal.configure(wrap='word', font=("Consolas", 12))
+            # Track current terminal font size explicitly for +/- controls
+            self.terminal_font_size = 12
         except Exception:
-            pass
+            # Still set a default size tracker even if configure fails
+            self.terminal_font_size = getattr(self, 'terminal_font_size', 12)
         self.terminal.pack(expand=True, fill="both")
         # Direct input: type into terminal window and press Enter to send
         self._setup_direct_terminal_input()
@@ -634,9 +619,9 @@ class NetApp(ctk.CTk):
         font_frame = ctk.CTkFrame(terminal_opts_frame)
         # Place font controls on their own row under the header
         font_frame.grid(row=2, column=0, sticky="w", padx=5, pady=2)
-        # Use a segmented control so + and − sit flush together
-        self.font_segment = ctk.CTkSegmentedButton(font_frame, values=["+", "-"], command=self._on_font_segment)
-        self.font_segment.pack(side=tk.LEFT)
+        # Replace segmented control with two simple buttons for reliable repeated clicks
+        ctk.CTkButton(font_frame, text="+", width=36, command=self.increase_terminal_font).pack(side=tk.LEFT, padx=2)
+        ctk.CTkButton(font_frame, text="-", width=36, command=self.decrease_terminal_font).pack(side=tk.LEFT, padx=2)
         self.auto_pager_var = tk.BooleanVar(value=True)
         # Stack Terminal Options buttons vertically for compact layout
         self.fix_command_btn = ctk.CTkButton(terminal_opts_frame, text="Fix with AI", command=self.ai_fix_last_command, state=tk.DISABLED)
@@ -681,7 +666,7 @@ class NetApp(ctk.CTk):
         # Reduce AI output pane height to favor Chat context visibility
         self.ai_output = ctk.CTkTextbox(ai_assistant_frame)
         try:
-            self.ai_output.configure(wrap='word', font=("Consolas", 10), height=120)
+            self.ai_output.configure(wrap='word', font=("Consolas", 12), height=120)
         except Exception:
             pass
         self.ai_output.pack(pady=10, padx=10, expand=True, fill="both")
@@ -703,7 +688,7 @@ class NetApp(ctk.CTk):
         # Larger running-config viewer for better visibility
         self.running_config_text = ctk.CTkTextbox(chat_context_frame)
         try:
-            self.running_config_text.configure(wrap='word', font=("Consolas", 9), height=180)
+            self.running_config_text.configure(wrap='word', font=("Consolas", 12), height=180)
         except Exception:
             pass
         self.running_config_text.pack(pady=5, expand=True, fill="both")
@@ -715,7 +700,7 @@ class NetApp(ctk.CTk):
         # Larger '?' commands viewer as well
         self.available_commands_text = ctk.CTkTextbox(chat_context_frame)
         try:
-            self.available_commands_text.configure(wrap='word', font=("Consolas", 9), height=150)
+            self.available_commands_text.configure(wrap='word', font=("Consolas", 12), height=150)
         except Exception:
             pass
         self.available_commands_text.pack(pady=5, expand=True, fill="both")
@@ -723,7 +708,7 @@ class NetApp(ctk.CTk):
         # Halve the chat agent window height by giving room to context panes
         self.chat_log = ctk.CTkTextbox(chat_frame)
         try:
-            self.chat_log.configure(wrap='word', font=("Consolas", 10), height=120)
+            self.chat_log.configure(wrap='word', font=("Consolas", 12), height=120)
         except Exception:
             pass
         self.chat_log.pack(pady=6, padx=10, expand=True, fill="both")
@@ -1644,10 +1629,10 @@ class NetApp(ctk.CTk):
                 messagebox.showerror("API Key", f"OpenAI check failed: {e}")
         elif provider == "Mistral":
             try:
-                if MistralClient and ChatMessage:
-                    client = MistralClient(api_key=api_key)
+                if Mistral:
+                    client = Mistral(api_key=api_key)
                     # Use a tiny model for a quick ping
-                    client.chat(model="mistral-tiny", messages=[ChatMessage(role="user", content="ping")])
+                    client.chat.complete(model="mistral-tiny", messages=[{"role": "user", "content": "ping"}])
                     messagebox.showinfo("API Key", "Mistral API key is valid and reachable.")
                 else:
                     # Fallback to REST: list models to validate key without SDK
@@ -2002,20 +1987,62 @@ class NetApp(ctk.CTk):
     def increase_terminal_font(self):
         # Increase font size up to a sensible maximum
         try:
-            current = getattr(self, 'terminal_font_size', 10)
+            current = getattr(self, 'terminal_font_size', 12)
             new_size = min(current + 1, 48)
             self.terminal_font_size = new_size
             self.terminal.configure(font=("Consolas", new_size))
+            # Apply same size to AI, Fetch '?', and Generate Commands panes
+            try:
+                if hasattr(self, 'ai_output') and self.ai_output:
+                    self.ai_output.configure(font=("Consolas", new_size))
+            except Exception:
+                pass
+            try:
+                if hasattr(self, 'available_commands_text') and self.available_commands_text:
+                    self.available_commands_text.configure(font=("Consolas", new_size))
+            except Exception:
+                pass
+            try:
+                if hasattr(self, 'chat_log') and self.chat_log:
+                    self.chat_log.configure(font=("Consolas", new_size))
+            except Exception:
+                pass
+            try:
+                if hasattr(self, 'running_config_text') and self.running_config_text:
+                    self.running_config_text.configure(font=("Consolas", new_size))
+            except Exception:
+                pass
         except Exception:
             pass
 
     def decrease_terminal_font(self):
         # Decrease font size down to a sensible minimum
         try:
-            current = getattr(self, 'terminal_font_size', 10)
+            current = getattr(self, 'terminal_font_size', 12)
             new_size = max(current - 1, 6)
             self.terminal_font_size = new_size
             self.terminal.configure(font=("Consolas", new_size))
+            # Apply same size to AI, Fetch '?', and Generate Commands panes
+            try:
+                if hasattr(self, 'ai_output') and self.ai_output:
+                    self.ai_output.configure(font=("Consolas", new_size))
+            except Exception:
+                pass
+            try:
+                if hasattr(self, 'available_commands_text') and self.available_commands_text:
+                    self.available_commands_text.configure(font=("Consolas", new_size))
+            except Exception:
+                pass
+            try:
+                if hasattr(self, 'chat_log') and self.chat_log:
+                    self.chat_log.configure(font=("Consolas", new_size))
+            except Exception:
+                pass
+            try:
+                if hasattr(self, 'running_config_text') and self.running_config_text:
+                    self.running_config_text.configure(font=("Consolas", new_size))
+            except Exception:
+                pass
         except Exception:
             pass
 

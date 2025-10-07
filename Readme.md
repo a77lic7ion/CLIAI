@@ -74,6 +74,11 @@ Connection Types
 Quick Start
 - Requirements: Windows, Python 3.10–3.13, internet access for cloud AI (optional), local Ollama if using local models.
 - Install dependencies: `pip install netmiko pyserial`
+- Optional AI SDKs:
+  - Mistral: `pip install mistralai`
+  - OpenAI: `pip install openai`
+  - Claude (Anthropic): `pip install anthropic`
+  - Ollama client: `pip install ollama`
 - Run: double-click `run_app.bat` or run `python app_gui.py`.
 - Connect:
   - Choose `Connection Type` and fill fields:
@@ -114,6 +119,7 @@ API Key Checks
   - Requires an API key.
   - Performs a lightweight chat request with `mistral-tiny` when SDK is installed.
   - If SDK is not installed, falls back to REST by listing models.
+  - To enable full SDK features, install: `pip install mistralai`.
 - Claude (Anthropic)
   - Requires an API key.
   - Performs a minimal messages call with `claude-3-opus-20240229`.

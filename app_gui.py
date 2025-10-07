@@ -509,7 +509,8 @@ class NetApp(tk.Tk):
         self.web_search_check = tk.Checkbutton(ai_assistant_frame, text="Use Web Search (Gemini)", variable=self.use_web_search_var)
         self.web_search_check.pack(pady=5, padx=10, anchor="w")
         tk.Button(ai_assistant_frame, text="Generate Commands", command=self.query_ai).pack(pady=5, padx=10, fill="x")
-        self.ai_output = scrolledtext.ScrolledText(ai_assistant_frame, wrap=tk.WORD, height=10, font=("Consolas", 10))
+        # Reduce AI output pane height to favor Chat context visibility
+        self.ai_output = scrolledtext.ScrolledText(ai_assistant_frame, wrap=tk.WORD, height=6, font=("Consolas", 10))
         self.ai_output.pack(pady=10, padx=10, expand=True, fill="both")
         self.push_to_device_btn = tk.Button(ai_assistant_frame, text="Push to Connected Device", command=self.push_ai_commands, state=tk.DISABLED)
         self.push_to_device_btn.pack(pady=10, padx=10, fill="x")
@@ -520,13 +521,20 @@ class NetApp(tk.Tk):
         # Context fetchers above the chat window
         chat_context_frame = tk.Frame(chat_frame)
         chat_context_frame.pack(pady=5, padx=10, fill='x')
-        self.fetch_config_btn = tk.Button(chat_context_frame, text="Fetch Running Config for AI Context", command=self.fetch_running_config)
-        self.fetch_config_btn.pack(pady=5, fill="x")
-        self.running_config_text = scrolledtext.ScrolledText(chat_context_frame, wrap=tk.WORD, height=6, font=("Consolas", 9))
+        # Button row for fetching and exporting running config
+        button_row = tk.Frame(chat_context_frame)
+        button_row.pack(pady=5, fill="x")
+        self.fetch_config_btn = tk.Button(button_row, text="Fetch Running Config for AI Context", command=self.fetch_running_config)
+        self.fetch_config_btn.pack(side=tk.LEFT, fill="x", expand=True)
+        self.export_config_btn = tk.Button(button_row, text="Export to TXT", command=self.export_running_config_to_txt)
+        self.export_config_btn.pack(side=tk.LEFT, padx=6)
+        # Larger running-config viewer for better visibility
+        self.running_config_text = scrolledtext.ScrolledText(chat_context_frame, wrap=tk.WORD, height=10, font=("Consolas", 9))
         self.running_config_text.pack(pady=5, expand=True, fill="both")
         self.fetch_q_btn = tk.Button(chat_context_frame, text="Fetch '?' Commands for AI Context", command=self.fetch_available_commands)
         self.fetch_q_btn.pack(pady=5, fill="x")
-        self.available_commands_text = scrolledtext.ScrolledText(chat_context_frame, wrap=tk.WORD, height=4, font=("Consolas", 9))
+        # Larger '?' commands viewer as well
+        self.available_commands_text = scrolledtext.ScrolledText(chat_context_frame, wrap=tk.WORD, height=8, font=("Consolas", 9))
         self.available_commands_text.pack(pady=5, expand=True, fill="both")
 
         # Halve the chat agent window height by giving room to context panes
@@ -540,8 +548,8 @@ class NetApp(tk.Tk):
         tk.Button(chat_input_frame, text="Send", command=self.chat_ask).pack(side=tk.LEFT, padx=6)
         tk.Button(chat_input_frame, text="Save to KB", command=self.save_chat_to_knowledge).pack(side=tk.LEFT, padx=6)
 
-        # Schedule sash placement for 50/50 split
-        self.after(100, lambda: right_split.sash_place(0, int(right_split.winfo_width() / 2), 0))
+        # Favor Chat side for visibility: ~35% AI Assistant, ~65% Chat
+        self.after(100, lambda: right_split.sash_place(0, int(right_split.winfo_width() * 0.35), 0))
 
         # --- Status Bar ---
         self.status_var = tk.StringVar()
@@ -2051,6 +2059,41 @@ class NetApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to fetch available commands: {e}")
             self.update_status("Failed to fetch available commands.")
+
+    def export_running_config_to_txt(self):
+        """Export the current running config text area to a .txt file."""
+        try:
+            text = self.running_config_text.get('1.0', tk.END)
+            if not text.strip():
+                try:
+                    messagebox.showinfo("Export", "Running config is empty. Fetch it first.")
+                except Exception:
+                    pass
+                return
+
+            path = filedialog.asksaveasfilename(
+                title="Save Running Config",
+                defaultextension=".txt",
+                filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
+                initialfile="running-config.txt"
+            )
+            if not path:
+                return
+
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(text)
+            self.update_status(f"Running config exported to {os.path.basename(path)}")
+            self.log_to_terminal(f"Running config exported to: {path}", "info")
+            try:
+                messagebox.showinfo("Export Complete", f"Saved to: {path}")
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                messagebox.showerror("Export Error", f"Failed to export: {e}")
+            except Exception:
+                pass
+            self.log_to_terminal(f"Export failed: {e}", "error")
 
     def fetch_device_info(self):
         if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:

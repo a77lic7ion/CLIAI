@@ -562,8 +562,22 @@ class NetApp(tk.Tk):
 
         # --- Status Bar ---
         self.status_var = tk.StringVar()
-        self.status_bar = tk.Label(self, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        # Replace single label with a frame containing label + progress bar
+        self.status_frame = tk.Frame(self, bd=1, relief=tk.SUNKEN)
+        self.status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.status_bar = tk.Label(self.status_frame, textvariable=self.status_var, anchor=tk.W)
+        self.status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Bottom progress bar (indeterminate) for visual task progress
+        try:
+            self.bottom_progress = ttk.Progressbar(self.status_frame, mode="indeterminate", length=140)
+            # Hidden by default; shown when tasks run
+            self.bottom_progress.pack(side=tk.RIGHT, padx=6, pady=2)
+            self.bottom_progress.stop()
+            self.bottom_progress.pack_forget()
+            self._busy_task_depth = 0
+        except Exception:
+            self.bottom_progress = None
+            self._busy_task_depth = 0
         
         # --- Busy Overlay (progress/thinking indicator) ---
         self._create_busy_overlay()
@@ -757,6 +771,27 @@ class NetApp(tk.Tk):
                 
                 time.sleep(5) # Add a small delay to avoid hitting API rate limits
 
+            # Append a build summary to Knowledge Base
+            try:
+                model_val = self.model_entry.get().strip()
+                version_val = self.ver_entry.get().strip()
+                profile_val = self.profile_combo.get().strip() if hasattr(self, 'profile_combo') else ''
+                summary_text = (
+                    "Build Summary\n"
+                    f"Manufacturer: {manufacturer}\n"
+                    f"Model: {model_val}\n"
+                    f"Version: {version_val}\n"
+                    f"Profile: {profile_val}\n"
+                    "Categories: VLANs, Interfaces, L3 and Routing, System Management, Port-Channel\n"
+                    "Status: Success"
+                )
+                cursor.execute(
+                    "INSERT INTO command_knowledge (manufacturer, category, guidance_text) VALUES (?, ?, ?)",
+                    (manufacturer, "Build Summary", summary_text)
+                )
+            except Exception as e:
+                self.log_to_terminal(f"Failed to append build summary to KB: {e}", "error")
+
             db_conn.commit()
             self.log_to_terminal("Command database build finished and saved.", "info")
             self.update_status("Command DB build finished.")
@@ -893,6 +928,12 @@ class NetApp(tk.Tk):
         Also updates the status message if provided.
         """
         try:
+            # Maintain task depth to support nested operations
+            if is_busy:
+                self._busy_task_depth = max(0, getattr(self, '_busy_task_depth', 0)) + 1
+            else:
+                self._busy_task_depth = max(0, getattr(self, '_busy_task_depth', 0) - 1)
+
             if message:
                 self.busy_var.set(message)
                 self.update_status(message)
@@ -902,11 +943,30 @@ class NetApp(tk.Tk):
                     self.busy_frame.lift()
                 if self.busy_bar:
                     self.busy_bar.start(10)
+                # Bottom progress bar (always show while any tasks are active)
+                if self.bottom_progress:
+                    try:
+                        # If currently hidden, re-pack it to show
+                        if not str(self.bottom_progress).endswith(".n"):  # dummy check to avoid errors
+                            pass
+                        # Ensure it’s packed (idempotent: packing the same widget again is safe)
+                        self.bottom_progress.pack(side=tk.RIGHT, padx=6, pady=2)
+                        self.bottom_progress.start(10)
+                    except Exception:
+                        pass
             else:
-                if self.busy_bar:
-                    self.busy_bar.stop()
-                if self.busy_frame:
-                    self.busy_frame.place_forget()
+                # Only stop/hide when no nested tasks remain
+                if self._busy_task_depth == 0:
+                    if self.busy_bar:
+                        self.busy_bar.stop()
+                    if self.busy_frame:
+                        self.busy_frame.place_forget()
+                    if self.bottom_progress:
+                        try:
+                            self.bottom_progress.stop()
+                            self.bottom_progress.pack_forget()
+                        except Exception:
+                            pass
             self.update_idletasks()
         except Exception:
             pass
@@ -1494,6 +1554,7 @@ class NetApp(tk.Tk):
             messagebox.showerror("Error", "Please select a COM port")
             return
         
+        self.set_busy(True, f"Connecting to {com_port}…")
         try:
             # Create serial connection
             self.connection = serial.Serial(
@@ -1515,9 +1576,12 @@ class NetApp(tk.Tk):
             
         except Exception as e:
             messagebox.showerror("Connection Error", f"Failed to connect to {com_port}: {str(e)}")
+        finally:
+            self.set_busy(False)
 
     def disconnect(self):
         if self.connection:
+            self.set_busy(True, "Disconnecting…")
             try:
                 self._pause_serial_reader()
                 self.connection.close()
@@ -1528,6 +1592,8 @@ class NetApp(tk.Tk):
                 self.update_status("Disconnected")
             except Exception as e:
                 messagebox.showerror("Disconnection Error", f"Error during disconnection: {str(e)}")
+            finally:
+                self.set_busy(False)
 
     def _resume_serial_reader(self):
         if self.reader_thread and self.reader_thread.is_alive():
@@ -2231,6 +2297,7 @@ class NetApp(tk.Tk):
             return
 
         manufacturer = (self.man_entry.get() or '').strip().lower()
+        self.set_busy(True, "Saving device configuration…")
         try:
             if 'cisco' in manufacturer:
                 # Use 'write memory' for IOS
@@ -2261,6 +2328,8 @@ class NetApp(tk.Tk):
                     pass
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save config: {e}")
+        finally:
+            self.set_busy(False)
 
     def fetch_running_config(self):
         if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:
@@ -2282,6 +2351,7 @@ class NetApp(tk.Tk):
         self.update_status(f"Fetching running-config with '{cmd}'...")
         self.log_to_terminal(f"\n>>> Fetching running-config with '{cmd}'... (this may take a moment)", "info")
         
+        self.set_busy(True, "Fetching running config…")
         try:
             # Use a long timeout to capture the entire configuration
             config = self.run_device_command(cmd, timeout=30)
@@ -2292,6 +2362,8 @@ class NetApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to fetch running-config: {e}")
             self.update_status("Failed to fetch running-config.")
+        finally:
+            self.set_busy(False)
 
     def fetch_available_commands(self):
         if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:
@@ -2301,6 +2373,7 @@ class NetApp(tk.Tk):
         self.update_status("Fetching available commands with '?'...")
         self.log_to_terminal("\n>>> Fetching available commands with '?'...", "info")
         
+        self.set_busy(True, "Fetching available commands…")
         try:
             # Use a long timeout to capture potentially paginated output
             commands_output = self.run_device_command('?', timeout=20)
@@ -2331,6 +2404,8 @@ class NetApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to fetch available commands: {e}")
             self.update_status("Failed to fetch available commands.")
+        finally:
+            self.set_busy(False)
 
     def export_running_config_to_txt(self):
         """Export the current running config text area to a .txt file."""
@@ -2970,6 +3045,7 @@ class NetApp(tk.Tk):
         top_frame.pack(fill='x', padx=10, pady=5)
         tk.Button(top_frame, text="Refresh", command=lambda: self._populate_kb_viewer(tree)).pack(side=tk.LEFT)
         tk.Button(top_frame, text="Import from JSON...", command=lambda: self.import_knowledge_from_json(tree)).pack(side=tk.LEFT, padx=10)
+        tk.Button(top_frame, text="Delete Selected", command=lambda: self._delete_kb_entry(tree, kb_text)).pack(side=tk.LEFT)
 
         pane = tk.PanedWindow(kb_window, orient=tk.VERTICAL, sashrelief=tk.RAISED)
         pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -3014,16 +3090,45 @@ class NetApp(tk.Tk):
         cursor.execute("SELECT id, manufacturer, category, timestamp, guidance_text FROM command_knowledge ORDER BY timestamp DESC")
         for row in cursor.fetchall():
             item_id = tree.insert("", tk.END, values=row[:4])
-            tree.selection_data[item_id] = row[4] # Store guidance_text
+            tree.selection_data[item_id] = {"guidance": row[4], "timestamp": row[3]}
 
     def _on_kb_select(self, event, tree, text_widget):
         try:
             selected_item = tree.selection()[0]
-            guidance = tree.selection_data.get(selected_item, "")
+            data = tree.selection_data.get(selected_item, {})
+            guidance = data.get("guidance", "")
+            timestamp = data.get("timestamp", "")
             text_widget.delete('1.0', tk.END)
+            if timestamp:
+                text_widget.insert(tk.END, f"Timestamp: {timestamp}\n\n")
             text_widget.insert(tk.END, guidance)
         except IndexError:
             pass # Ignore empty selection
+
+    def _delete_kb_entry(self, tree, text_widget=None):
+        try:
+            selected_item = tree.selection()[0]
+        except IndexError:
+            messagebox.showinfo("Delete", "No KB entry selected.")
+            return
+        values = tree.item(selected_item, 'values')
+        if not values:
+            messagebox.showinfo("Delete", "No KB entry selected.")
+            return
+        kb_id = values[0]
+        if not messagebox.askyesno("Confirm", f"Delete KB entry ID {kb_id}? This cannot be undone."):
+            return
+        try:
+            cursor = self.db_conn.cursor()
+            cursor.execute("DELETE FROM command_knowledge WHERE id = ?", (kb_id,))
+            self.db_conn.commit()
+            # Refresh view and clear text
+            self._populate_kb_viewer(tree)
+            if text_widget:
+                text_widget.delete('1.0', tk.END)
+            self.update_status(f"Deleted KB entry {kb_id}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete KB entry: {e}")
 
 if __name__ == "__main__":
     app = NetApp()

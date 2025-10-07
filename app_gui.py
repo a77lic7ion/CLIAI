@@ -50,6 +50,7 @@ MANUFACTURER_TO_DEVICE_TYPE = {
     "cisco": "cisco_ios",
     "juniper": "juniper_junos",
     "arista": "arista_eos",
+    "huawei": "huawei",
 }
 
 class TelnetAdapter:
@@ -593,8 +594,14 @@ class NetApp(tk.Tk):
         context_frame = tk.Frame(ai_assistant_frame)
         context_frame.pack(pady=5, padx=10, fill='x')
         tk.Label(context_frame, text="Manufacturer:").grid(row=0, column=0, sticky="w")
-        self.man_entry = tk.Entry(context_frame)
-        self.man_entry.grid(row=0, column=1, sticky="ew", padx=2)
+        # Group manufacturer Entry and Dropdown in a subframe so dropdown sits under the entry
+        man_field_frame = tk.Frame(context_frame)
+        man_field_frame.grid(row=0, column=1, sticky="ew", padx=2)
+        self.man_entry = tk.Entry(man_field_frame)
+        self.man_entry.pack(fill="x")
+        self.man_combo = ttk.Combobox(man_field_frame, state="readonly", values=["Cisco", "H3C", "Huawei", "Juniper", "Other"])
+        self.man_combo.pack(fill="x", pady=2)
+        self.man_combo.bind("<<ComboboxSelected>>", self._on_manufacturer_selected)
         tk.Label(context_frame, text="Device Type:").grid(row=1, column=0, sticky="w")
         self.type_entry = tk.Entry(context_frame)
         self.type_entry.grid(row=1, column=1, sticky="ew", padx=2)
@@ -1613,6 +1620,24 @@ class NetApp(tk.Tk):
         mode = self.term_wrap_combo.get()
         try:
             self.terminal.config(wrap=tk.NONE if mode == "No wrap" else tk.WORD)
+        except Exception:
+            pass
+
+    def _on_manufacturer_selected(self, event=None):
+        try:
+            sel = self.man_combo.get().strip()
+            # Normalize to lowercase for internal handling
+            normalized = sel.lower()
+            self.man_entry.delete(0, tk.END)
+            self.man_entry.insert(0, normalized)
+            # Auto-populate Device Type based on mapping; blank for 'other'
+            try:
+                dev_type = MANUFACTURER_TO_DEVICE_TYPE.get(normalized, "")
+                self.type_entry.delete(0, tk.END)
+                if dev_type:
+                    self.type_entry.insert(0, dev_type)
+            except Exception:
+                pass
         except Exception:
             pass
 

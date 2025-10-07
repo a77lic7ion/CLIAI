@@ -988,6 +988,11 @@ class NetApp(tk.Tk):
 
                     # Query '?' for the current path
                     try:
+                        # Ensure we are at the main starting view before each new exploration
+                        try:
+                            self._ensure_root_prompt(manuf)
+                        except Exception:
+                            pass
                         help_out = self.run_device_command(f"{cmd_path} ?", timeout=8)
                     except Exception:
                         help_out = ''
@@ -997,6 +1002,15 @@ class NetApp(tk.Tk):
                         self._save_command_branch_to_db(manuf, cmd_path, context_guess, help_out, conn=db_conn)
                     except Exception:
                         pass
+
+                    # If the device responded with an error, skip expanding this branch
+                    if self._is_cli_error(help_out):
+                        # Attempt to return to root view in case the device changed mode unexpectedly
+                        try:
+                            self._ensure_root_prompt(manuf)
+                        except Exception:
+                            pass
+                        continue
 
                     # If depth limit reached, don't expand further
                     if len(path) >= max_depth:
@@ -1566,6 +1580,69 @@ class NetApp(tk.Tk):
         except Exception:
             pass
         return False
+
+    def _ensure_root_prompt(self, manufacturer):
+        """Ensure the device is at the main starting view before sending expansion commands.
+
+        For H3C/Huawei VRP, repeatedly send 'quit' to back out of feature views
+        until the bracketed prompt no longer contains a '-' segment.
+        For other vendors, we avoid auto-exit to prevent accidental logout.
+        """
+        try:
+            manuf = (manufacturer or '').lower()
+            if not self.connection or not getattr(self, 'is_connected', False):
+                return
+
+            # Inspect the last prompt line
+            try:
+                last_line = self.terminal.get("end-2l", "end-1l").strip()
+            except Exception:
+                last_line = ''
+
+            # Only apply aggressive backoff for H3C/Huawei VRP
+            if ('h3c' in manuf or 'huawei' in manuf):
+                # If in a sub-mode like [HOSTNAME-igmp-snooping], back out
+                def is_submode_prompt(s: str):
+                    return s.startswith('[') and s.endswith(']') and '-' in s
+
+                attempts = 0
+                while is_submode_prompt(last_line) and attempts < 6:
+                    try:
+                        # Wake the line and back out one level
+                        self.connection.write(b"\r\n")
+                        time.sleep(0.05)
+                        self.connection.write(b"quit\r\n")
+                    except Exception:
+                        break
+                    # Let device respond and update terminal
+                    t0 = time.time()
+                    while time.time() - t0 < 0.6:
+                        try:
+                            waiting = self.connection.in_waiting
+                        except Exception:
+                            waiting = 0
+                        if waiting:
+                            try:
+                                chunk = self.connection.read(waiting).decode('utf-8', errors='ignore')
+                                self.log_to_terminal(chunk, 'output')
+                            except Exception:
+                                pass
+                        time.sleep(0.08)
+                    # Refresh prompt detection
+                    try:
+                        last_line = self.terminal.get("end-2l", "end-1l").strip()
+                    except Exception:
+                        last_line = ''
+                    attempts += 1
+            else:
+                # For Cisco/Juniper/others, do not auto-exit; simply ensure line is awake
+                try:
+                    self.connection.write(b"\r\n")
+                except Exception:
+                    pass
+        except Exception:
+            # Best-effort; ignore failures
+            pass
 
     def _execute_vlan_show_with_autocorrect(self, manufacturer):
         """Run VLAN show command; if it fails, probe help and correct automatically. Returns (output, cmd_used)."""

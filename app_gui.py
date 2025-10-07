@@ -426,76 +426,81 @@ class NetApp(ctk.CTk):
             self.stop_db_build_event = None
 
         # --- Main Content Frame ---
-        main_frame = tk.Frame(self)
+        main_frame = ctk.CTkFrame(self)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         main_pane = tk.PanedWindow(main_frame, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
         main_pane.pack(fill=tk.BOTH, expand=True)
 
-        left_frame = tk.Frame(main_pane, bd=2)
+        left_frame = ctk.CTkFrame(main_pane)
         main_pane.add(left_frame, width=600)
 
-        conn_frame = tk.LabelFrame(left_frame, text="Connection", bd=2, relief=tk.GROOVE)
+        conn_frame = ctk.CTkFrame(left_frame)
         conn_frame.pack(pady=10, padx=10, fill="x")
-        tk.Label(conn_frame, text="Profile:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.profile_combo = ttk.Combobox(conn_frame, state="readonly")
-        self.profile_combo.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
-        self.profile_combo.bind("<<ComboboxSelected>>", self.load_selected_profile)
-        # Connection type selector (Serial/SSH/Telnet)
-        tk.Label(conn_frame, text="Conn Type:").grid(row=0, column=4, padx=5, pady=5, sticky="w")
-        self.conn_type_var = tk.StringVar(value="Serial")
-        self.conn_type_combo = ttk.Combobox(conn_frame, state="readonly", values=["Serial", "SSH", "Telnet"], textvariable=self.conn_type_var, width=10)
-        self.conn_type_combo.grid(row=0, column=5, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(conn_frame, text="Connection", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=6, padx=5, pady=(6,4), sticky="w")
+        ctk.CTkLabel(conn_frame, text="Profile:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.profile_combo = ctk.CTkComboBox(conn_frame, state="normal")
+        self.profile_combo.grid(row=1, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
         try:
-            self.conn_type_combo.bind("<<ComboboxSelected>>", self.on_conn_type_change)
+            self.profile_combo.configure(command=self.load_selected_profile)
         except Exception:
             pass
-        tk.Label(conn_frame, text="COM Port:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.com_port_combo = ttk.Combobox(conn_frame, state="readonly")
-        self.com_port_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        tk.Button(conn_frame, text="Refresh", command=self.refresh_com_ports).grid(row=1, column=2, padx=5, pady=5)
-        tk.Label(conn_frame, text="Baud:").grid(row=1, column=3, padx=5, pady=5, sticky="w")
-        self.baud_combo = ttk.Combobox(conn_frame, state="readonly", values=["9600","19200","38400","57600","115200"], width=8)
-        self.baud_combo.grid(row=1, column=4, padx=5, pady=5, sticky="w")
+        # Connection type selector (Serial/SSH/Telnet)
+        ctk.CTkLabel(conn_frame, text="Conn Type:").grid(row=1, column=4, padx=5, pady=5, sticky="w")
+        self.conn_type_var = tk.StringVar(value="Serial")
+        self.conn_type_combo = ctk.CTkComboBox(conn_frame, values=["Serial", "SSH", "Telnet"], width=120)
+        self.conn_type_combo.grid(row=1, column=5, padx=5, pady=5, sticky="w")
+        try:
+            self.conn_type_combo.configure(command=self.on_conn_type_change)
+        except Exception:
+            pass
+        ctk.CTkLabel(conn_frame, text="COM Port:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        self.com_port_combo = ctk.CTkComboBox(conn_frame, state="normal")
+        self.com_port_combo.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+        ctk.CTkButton(conn_frame, text="Refresh", command=self.refresh_com_ports).grid(row=2, column=2, padx=5, pady=5)
+        ctk.CTkLabel(conn_frame, text="Baud:").grid(row=2, column=3, padx=5, pady=5, sticky="w")
+        self.baud_combo = ctk.CTkComboBox(conn_frame, values=["9600","19200","38400","57600","115200"], width=100)
+        self.baud_combo.grid(row=2, column=4, padx=5, pady=5, sticky="w")
         self.baud_combo.set("9600")
         # Populate COM ports now that the combobox exists
         self.refresh_com_ports()
-        tk.Label(conn_frame, text="Username:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
-        self.user_entry = tk.Entry(conn_frame)
-        self.user_entry.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
-        tk.Label(conn_frame, text="Password:").grid(row=2, column=2, padx=5, pady=5, sticky="w")
-        self.pass_entry = tk.Entry(conn_frame, show="*")
-        self.pass_entry.grid(row=2, column=3, padx=5, pady=5, sticky="ew")
+        ctk.CTkLabel(conn_frame, text="Username:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        self.user_entry = ctk.CTkEntry(conn_frame)
+        self.user_entry.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        ctk.CTkLabel(conn_frame, text="Password:").grid(row=3, column=2, padx=5, pady=5, sticky="w")
+        self.pass_entry = ctk.CTkEntry(conn_frame, show="*")
+        self.pass_entry.grid(row=3, column=3, padx=5, pady=5, sticky="ew")
         # Manual login helper: autofill username/password and send to CLI
-        self.auto_login_btn = tk.Button(conn_frame, text="Autofill & Send to CLI", command=self.autofill_send_to_cli)
-        self.auto_login_btn.grid(row=2, column=4, padx=5, pady=5, sticky="ew")
+        self.auto_login_btn = ctk.CTkButton(conn_frame, text="Autofill & Send to CLI", command=self.autofill_send_to_cli)
+        self.auto_login_btn.grid(row=3, column=4, padx=5, pady=5, sticky="ew")
 
-        tk.Label(conn_frame, text="Enable Pass:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
-        self.enable_pass_entry = tk.Entry(conn_frame, show="*")
-        self.enable_pass_entry.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        ctk.CTkLabel(conn_frame, text="Enable Pass:").grid(row=4, column=0, padx=5, pady=5, sticky="w")
+        self.enable_pass_entry = ctk.CTkEntry(conn_frame, show="*")
+        self.enable_pass_entry.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
         # Network connection fields (used for SSH/Telnet)
-        tk.Label(conn_frame, text="Host:").grid(row=3, column=2, padx=5, pady=5, sticky="w")
-        self.host_entry = tk.Entry(conn_frame)
-        self.host_entry.grid(row=3, column=3, padx=5, pady=5, sticky="ew")
-        tk.Label(conn_frame, text="Port:").grid(row=3, column=4, padx=5, pady=5, sticky="w")
-        self.port_entry = tk.Entry(conn_frame, width=6)
-        self.port_entry.grid(row=3, column=5, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(conn_frame, text="Host:").grid(row=4, column=2, padx=5, pady=5, sticky="w")
+        self.host_entry = ctk.CTkEntry(conn_frame)
+        self.host_entry.grid(row=4, column=3, padx=5, pady=5, sticky="ew")
+        ctk.CTkLabel(conn_frame, text="Port:").grid(row=4, column=4, padx=5, pady=5, sticky="w")
+        self.port_entry = ctk.CTkEntry(conn_frame, width=80)
+        self.port_entry.grid(row=4, column=5, padx=5, pady=5, sticky="w")
 
-        self.connect_btn = tk.Button(conn_frame, text="Connect", command=self.toggle_connection)
-        self.connect_btn.grid(row=4, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.connect_btn = ctk.CTkButton(conn_frame, text="Connect", command=self.toggle_connection)
+        self.connect_btn.grid(row=5, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
         # Unified button: Enter privileged/config mode based on manufacturer
-        self.enable_btn = tk.Button(conn_frame, text="Enter Privileged/Config Mode", command=self.enter_privileged_or_config_mode)
-        self.enable_btn.grid(row=4, column=2, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.enable_btn = ctk.CTkButton(conn_frame, text="Enter Privileged/Config Mode", command=self.enter_privileged_or_config_mode)
+        self.enable_btn.grid(row=5, column=2, columnspan=2, padx=10, pady=5, sticky="ew")
         conn_frame.columnconfigure(1, weight=1)
 
-        profile_btn_frame = tk.Frame(conn_frame)
-        profile_btn_frame.grid(row=0, column=2, columnspan=2, sticky='ew')
-        tk.Button(profile_btn_frame, text="Save", command=self.save_profile).pack(side=tk.LEFT, fill='x', expand=True)
-        tk.Button(profile_btn_frame, text="Update", command=self.update_profile).pack(side=tk.LEFT, fill='x', expand=True)
-        tk.Button(profile_btn_frame, text="Delete", command=self.delete_profile).pack(side=tk.LEFT, fill='x', expand=True)
+        profile_btn_frame = ctk.CTkFrame(conn_frame)
+        profile_btn_frame.grid(row=1, column=2, columnspan=2, sticky='ew')
+        ctk.CTkButton(profile_btn_frame, text="Save", command=self.save_profile).pack(side=tk.LEFT, fill='x', expand=True)
+        ctk.CTkButton(profile_btn_frame, text="Update", command=self.update_profile).pack(side=tk.LEFT, fill='x', expand=True)
+        ctk.CTkButton(profile_btn_frame, text="Delete", command=self.delete_profile).pack(side=tk.LEFT, fill='x', expand=True)
 
-        terminal_frame = tk.LabelFrame(left_frame, text="Device Terminal", bd=2, relief=tk.GROOVE)
+        terminal_frame = ctk.CTkFrame(left_frame)
         terminal_frame.pack(pady=10, padx=10, expand=True, fill="both")
+        ctk.CTkLabel(terminal_frame, text="Device Terminal", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(6,2))
         # Use CustomTkinter textbox for better theming and resizing
         self.terminal = ctk.CTkTextbox(terminal_frame)
         try:
@@ -508,10 +513,10 @@ class NetApp(ctk.CTk):
         self._show_prompt()
 
         # Inline terminal input controls
-        term_input_frame = tk.Frame(terminal_frame)
+        term_input_frame = ctk.CTkFrame(terminal_frame)
         term_input_frame.pack(fill="x", padx=10, pady=6)
         try:
-            self.term_input = tk.Entry(term_input_frame, font=("Consolas", 10))
+            self.term_input = ctk.CTkEntry(term_input_frame)
             self.term_input.pack(side=tk.LEFT, fill="x", expand=True)
             # Allow pressing Return to send the typed command from the input field
             try:
@@ -520,78 +525,86 @@ class NetApp(ctk.CTk):
                 self.term_input.bind("<Control-c>", self._on_ctrl_c)
             except Exception:
                 pass
-            tk.Button(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=6)
-            tk.Button(term_input_frame, text="Send RETURN", command=self.send_enter_key).pack(side=tk.LEFT, padx=6)
+            ctk.CTkButton(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=6)
+            ctk.CTkButton(term_input_frame, text="Send RETURN", command=self.send_enter_key).pack(side=tk.LEFT, padx=6)
             # New help button: sends a space then '?' and presses return
-            tk.Button(term_input_frame, text="?", command=self.send_space_then_question).pack(side=tk.LEFT, padx=6)
+            ctk.CTkButton(term_input_frame, text="?", command=self.send_space_then_question).pack(side=tk.LEFT, padx=6)
             # Ctrl+C button to interrupt long-running device output/commands
-            tk.Button(term_input_frame, text="Ctrl+C", command=self.send_ctrl_c).pack(side=tk.LEFT, padx=6)
-            tk.Button(term_input_frame, text="Quit", command=self.send_quit_command).pack(side=tk.LEFT, padx=6)
+            ctk.CTkButton(term_input_frame, text="Ctrl+C", command=self.send_ctrl_c).pack(side=tk.LEFT, padx=6)
+            ctk.CTkButton(term_input_frame, text="Quit", command=self.send_quit_command).pack(side=tk.LEFT, padx=6)
         except Exception:
             pass
 
         # Make Push-to-Device accessible near the terminal as well
-        term_actions = tk.Frame(terminal_frame)
+        term_actions = ctk.CTkFrame(terminal_frame)
         term_actions.pack(fill="x", padx=10, pady=6)
-        tk.Button(term_actions, text="Push AI Commands to Device", command=self.push_ai_commands).pack(side=tk.LEFT, fill="x", expand=True)
-        tk.Button(term_actions, text="Save Config", command=self.save_device_config).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(term_actions, text="Push AI Commands to Device", command=self.push_ai_commands).pack(side=tk.LEFT, fill="x", expand=True)
+        ctk.CTkButton(term_actions, text="Save Config", command=self.save_device_config).pack(side=tk.LEFT, padx=6)
 
         # --- Right-hand side layout --- 
-        right_master_frame = tk.Frame(main_pane)
+        right_master_frame = ctk.CTkFrame(main_pane)
         main_pane.add(right_master_frame)
 
         # New top frame for side-by-side config sections
-        top_right_frame = tk.Frame(right_master_frame)
+        top_right_frame = ctk.CTkFrame(right_master_frame)
         top_right_frame.pack(fill="x", expand=False, pady=5, padx=5)
 
         # AI Configuration (now on the left of the top-right frame)
-        ai_config_frame = tk.LabelFrame(top_right_frame, text="AI Configuration", relief=tk.GROOVE)
+        ai_config_frame = ctk.CTkFrame(top_right_frame)
         ai_config_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=(0, 5))
+        ctk.CTkLabel(ai_config_frame, text="AI Configuration", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, padx=5, pady=(6,4), sticky="w")
 
-        tk.Label(ai_config_frame, text="Provider:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.ai_provider_combo = ttk.Combobox(ai_config_frame, state="readonly", values=["None", "Gemini", "OpenAI", "Mistral", "Claude", "Ollama", "Simulation"])
-        self.ai_provider_combo.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        ctk.CTkLabel(ai_config_frame, text="Provider:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.ai_provider_combo = ctk.CTkComboBox(ai_config_frame, values=["None", "Gemini", "OpenAI", "Mistral", "Claude", "Ollama", "Simulation"])
+        self.ai_provider_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
         self.ai_provider_combo.set("Gemini")
-        self.ai_provider_combo.bind("<<ComboboxSelected>>", self.on_ai_provider_change)
-        tk.Label(ai_config_frame, text="API Key:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        self.api_key_entry = tk.Entry(ai_config_frame, show="*")
-        self.api_key_entry.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
-        tk.Label(ai_config_frame, text="Ollama Model:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
-        self.ollama_model_combo = ttk.Combobox(ai_config_frame, state="readonly")
-        self.ollama_model_combo.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
-        tk.Label(ai_config_frame, text="Gemini Model:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
-        self.gemini_model_combo = ttk.Combobox(ai_config_frame, state="readonly", values=["1.5-flash", "2.0-flash", "1.5-pro"])
-        self.gemini_model_combo.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        try:
+            self.ai_provider_combo.configure(command=self.on_ai_provider_change)
+        except Exception:
+            pass
+        ctk.CTkLabel(ai_config_frame, text="API Key:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        self.api_key_entry = ctk.CTkEntry(ai_config_frame, show="*")
+        self.api_key_entry.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
+        ctk.CTkLabel(ai_config_frame, text="Ollama Model:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        self.ollama_model_combo = ctk.CTkComboBox(ai_config_frame, state="disabled")
+        self.ollama_model_combo.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        ctk.CTkLabel(ai_config_frame, text="Gemini Model:").grid(row=4, column=0, padx=5, pady=5, sticky="w")
+        self.gemini_model_combo = ctk.CTkComboBox(ai_config_frame, values=["1.5-flash", "2.0-flash", "1.5-pro"])
+        self.gemini_model_combo.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
         self.gemini_model_combo.set("2.0-flash")
         # Buttons: Set provider and Check API Key
-        self.set_ai_btn = tk.Button(ai_config_frame, text="Set AI Provider", command=self.set_ai_provider)
-        self.set_ai_btn.grid(row=4, column=0, padx=5, pady=5, sticky="ew")
-        self.check_api_btn = tk.Button(ai_config_frame, text="Check API Key", command=self.check_api_key)
-        self.check_api_btn.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
+        self.set_ai_btn = ctk.CTkButton(ai_config_frame, text="Set AI Provider", command=self.set_ai_provider)
+        self.set_ai_btn.grid(row=5, column=0, padx=5, pady=5, sticky="ew")
+        self.check_api_btn = ctk.CTkButton(ai_config_frame, text="Check API Key", command=self.check_api_key)
+        self.check_api_btn.grid(row=5, column=1, padx=5, pady=5, sticky="ew")
         ai_config_frame.columnconfigure(1, weight=1)
 
         # Terminal Options (moved from left frame to top-right)
-        terminal_opts_frame = tk.LabelFrame(top_right_frame, text="Terminal Options", bd=2, relief=tk.GROOVE)
+        terminal_opts_frame = ctk.CTkFrame(top_right_frame)
         terminal_opts_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=(5, 0))
+        ctk.CTkLabel(terminal_opts_frame, text="Terminal Options", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=5, pady=(6,4))
 
-        tk.Label(terminal_opts_frame, text="Wrap Mode:").grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        self.term_wrap_combo = ttk.Combobox(terminal_opts_frame, state="readonly", values=["Wrap (word)", "No wrap"], width=12)
+        ctk.CTkLabel(terminal_opts_frame, text="Wrap Mode:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        self.term_wrap_combo = ctk.CTkComboBox(terminal_opts_frame, values=["Wrap (word)", "No wrap"], width=140)
         self.term_wrap_combo.set("Wrap (word)")
-        self.term_wrap_combo.bind("<<ComboboxSelected>>", self.on_term_wrap_change)
-        self.term_wrap_combo.grid(row=0, column=1, sticky="w", padx=5, pady=2)
-        font_frame = tk.Frame(terminal_opts_frame)
+        try:
+            self.term_wrap_combo.configure(command=self.on_term_wrap_change)
+        except Exception:
+            pass
+        self.term_wrap_combo.grid(row=1, column=1, sticky="w", padx=5, pady=2)
+        font_frame = ctk.CTkFrame(terminal_opts_frame)
         font_frame.grid(row=0, column=2, sticky="w", padx=5, pady=2)
-        tk.Button(font_frame, text="Font +", command=self.increase_terminal_font).pack(side=tk.LEFT)
-        tk.Button(font_frame, text="Font -", command=self.decrease_terminal_font).pack(side=tk.LEFT)
+        ctk.CTkButton(font_frame, text="Font +", command=self.increase_terminal_font).pack(side=tk.LEFT)
+        ctk.CTkButton(font_frame, text="Font -", command=self.decrease_terminal_font).pack(side=tk.LEFT)
         self.auto_pager_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(terminal_opts_frame, text="Auto-pager", variable=self.auto_pager_var).grid(row=1, column=0, sticky="w", padx=5, pady=2)
-        tk.Button(terminal_opts_frame, text="Next Page", command=self.send_pager_next).grid(row=1, column=1, sticky="w", padx=5, pady=2)
-        tk.Button(terminal_opts_frame, text="Stop Paging", command=self.send_pager_stop).grid(row=1, column=2, sticky="w", padx=5, pady=2)
-        tk.Button(terminal_opts_frame, text="Disable Paging", command=self.disable_paging).grid(row=1, column=3, sticky="w", padx=5, pady=2)
-        self.fix_command_btn = tk.Button(terminal_opts_frame, text="Fix with AI", command=self.ai_fix_last_command, state=tk.DISABLED)
+        ctk.CTkCheckBox(terminal_opts_frame, text="Auto-pager", variable=self.auto_pager_var).grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ctk.CTkButton(terminal_opts_frame, text="Next Page", command=self.send_pager_next).grid(row=2, column=1, sticky="w", padx=5, pady=2)
+        ctk.CTkButton(terminal_opts_frame, text="Stop Paging", command=self.send_pager_stop).grid(row=2, column=2, sticky="w", padx=5, pady=2)
+        ctk.CTkButton(terminal_opts_frame, text="Disable Paging", command=self.disable_paging).grid(row=2, column=3, sticky="w", padx=5, pady=2)
+        self.fix_command_btn = ctk.CTkButton(terminal_opts_frame, text="Fix with AI", command=self.ai_fix_last_command, state=tk.DISABLED)
         self.fix_command_btn.grid(row=2, column=0, sticky="w", padx=5, pady=5)
-        tk.Button(terminal_opts_frame, text="Clear", command=self.clear_terminal).grid(row=2, column=1, sticky="w", padx=5, pady=5)
-        tk.Button(terminal_opts_frame, text="Export…", command=self.export_terminal_chat).grid(row=2, column=2, sticky="w", padx=5, pady=5)
+        ctk.CTkButton(terminal_opts_frame, text="Clear", command=self.clear_terminal).grid(row=2, column=1, sticky="w", padx=5, pady=5)
+        ctk.CTkButton(terminal_opts_frame, text="Export…", command=self.export_terminal_chat).grid(row=2, column=2, sticky="w", padx=5, pady=5)
 
         # Apply requested defaults and initialize provider
         try:
@@ -647,63 +660,80 @@ class NetApp(ctk.CTk):
         context_frame.columnconfigure(1, weight=1)
         context_frame.columnconfigure(2, weight=1)
 
-        ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
+        ctk.CTkSeparator(ai_assistant_frame).pack(fill='x', pady=5, padx=10)
 
         # (Fetch Running Config moved to Chat pane)
         # (Moved context panes to Chat window above)
-        ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
-        tk.Label(ai_assistant_frame, text="Your Request:").pack(pady=5, padx=10, anchor="w")
-        self.ai_input = tk.Entry(ai_assistant_frame, font=("Arial", 10))
+        ctk.CTkSeparator(ai_assistant_frame).pack(fill='x', pady=5, padx=10)
+        ctk.CTkLabel(ai_assistant_frame, text="Your Request:").pack(pady=5, padx=10, anchor="w")
+        self.ai_input = ctk.CTkEntry(ai_assistant_frame)
         self.ai_input.pack(pady=5, padx=10, fill="x")
         self.ai_input.bind("<Return>", self.query_ai)
         self.use_web_search_var = tk.BooleanVar(value=True)
-        self.web_search_check = tk.Checkbutton(ai_assistant_frame, text="Use Web Search (Gemini)", variable=self.use_web_search_var)
+        self.web_search_check = ctk.CTkCheckBox(ai_assistant_frame, text="Use Web Search (Gemini)", variable=self.use_web_search_var)
         self.web_search_check.pack(pady=5, padx=10, anchor="w")
-        tk.Button(ai_assistant_frame, text="Generate Commands", command=self.query_ai).pack(pady=5, padx=10, fill="x")
+        ctk.CTkButton(ai_assistant_frame, text="Generate Commands", command=self.query_ai).pack(pady=5, padx=10, fill="x")
         # Reduce AI output pane height to favor Chat context visibility
-        self.ai_output = scrolledtext.ScrolledText(ai_assistant_frame, wrap=tk.WORD, height=6, font=("Consolas", 10))
+        self.ai_output = ctk.CTkTextbox(ai_assistant_frame)
+        try:
+            self.ai_output.configure(wrap='word', font=("Consolas", 10), height=120)
+        except Exception:
+            pass
         self.ai_output.pack(pady=10, padx=10, expand=True, fill="both")
 
         # Chat pane: ask questions, get backend answers, and generate commands for changes
-        chat_frame = tk.LabelFrame(right_split, text="Chat", relief=tk.GROOVE)
+        chat_frame = ctk.CTkFrame(right_split)
         right_split.add(chat_frame, minsize=300)
+        ctk.CTkLabel(chat_frame, text="Chat", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(6,2))
         # Context fetchers above the chat window
-        chat_context_frame = tk.Frame(chat_frame)
+        chat_context_frame = ctk.CTkFrame(chat_frame)
         chat_context_frame.pack(pady=5, padx=10, fill='x')
         # Button row for fetching and exporting running config
-        button_row = tk.Frame(chat_context_frame)
+        button_row = ctk.CTkFrame(chat_context_frame)
         button_row.pack(pady=5, fill="x")
-        self.fetch_config_btn = tk.Button(button_row, text="Fetch Running Config for AI Context", command=self.fetch_running_config)
+        self.fetch_config_btn = ctk.CTkButton(button_row, text="Fetch Running Config for AI Context", command=self.fetch_running_config)
         self.fetch_config_btn.pack(side=tk.LEFT, fill="x", expand=True)
-        self.export_config_btn = tk.Button(button_row, text="Export to TXT", command=self.export_running_config_to_txt)
+        self.export_config_btn = ctk.CTkButton(button_row, text="Export to TXT", command=self.export_running_config_to_txt)
         self.export_config_btn.pack(side=tk.LEFT, padx=6)
         # Larger running-config viewer for better visibility
-        self.running_config_text = scrolledtext.ScrolledText(chat_context_frame, wrap=tk.WORD, height=10, font=("Consolas", 9))
+        self.running_config_text = ctk.CTkTextbox(chat_context_frame)
+        try:
+            self.running_config_text.configure(wrap='word', font=("Consolas", 9), height=180)
+        except Exception:
+            pass
         self.running_config_text.pack(pady=5, expand=True, fill="both")
-        self.fetch_q_btn = tk.Button(chat_context_frame, text="Fetch '?' Commands for AI Context", command=self.fetch_available_commands)
+        self.fetch_q_btn = ctk.CTkButton(chat_context_frame, text="Fetch '?' Commands for AI Context", command=self.fetch_available_commands)
         self.fetch_q_btn.pack(pady=5, fill="x")
         # Option to append fetched '?' output to the CLI command DB
         self.append_available_to_db_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(chat_context_frame, text="Append '?' output to CLI DB", variable=self.append_available_to_db_var).pack(pady=2, anchor='w')
+        ctk.CTkCheckBox(chat_context_frame, text="Append '?' output to CLI DB", variable=self.append_available_to_db_var).pack(pady=2, anchor='w')
         # Larger '?' commands viewer as well
-        self.available_commands_text = scrolledtext.ScrolledText(chat_context_frame, wrap=tk.WORD, height=8, font=("Consolas", 9))
+        self.available_commands_text = ctk.CTkTextbox(chat_context_frame)
+        try:
+            self.available_commands_text.configure(wrap='word', font=("Consolas", 9), height=150)
+        except Exception:
+            pass
         self.available_commands_text.pack(pady=5, expand=True, fill="both")
 
         # Halve the chat agent window height by giving room to context panes
-        self.chat_log = scrolledtext.ScrolledText(chat_frame, wrap=tk.WORD, height=6, font=("Consolas", 10))
+        self.chat_log = ctk.CTkTextbox(chat_frame)
+        try:
+            self.chat_log.configure(wrap='word', font=("Consolas", 10), height=120)
+        except Exception:
+            pass
         self.chat_log.pack(pady=6, padx=10, expand=True, fill="both")
-        chat_input_frame = tk.Frame(chat_frame)
+        chat_input_frame = ctk.CTkFrame(chat_frame)
         chat_input_frame.pack(fill="x", padx=10, pady=6)
-        self.chat_input = tk.Entry(chat_input_frame, font=("Arial", 10))
+        self.chat_input = ctk.CTkEntry(chat_input_frame)
         self.chat_input.pack(side=tk.LEFT, fill="x", expand=True)
         self.chat_input.bind("<Return>", self.chat_ask)
-        tk.Button(chat_input_frame, text="Send", command=self.chat_ask).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(chat_input_frame, text="Send", command=self.chat_ask).pack(side=tk.LEFT, padx=6)
         # Option to append running config to chat queries for exact-device context
         self.append_rc_to_chat_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(chat_input_frame, text="Append Running Config", variable=self.append_rc_to_chat_var).pack(side=tk.LEFT, padx=6)
-        tk.Button(chat_input_frame, text="Save to KB", command=self.save_chat_to_knowledge).pack(side=tk.LEFT, padx=6)
+        ctk.CTkCheckBox(chat_input_frame, text="Append Running Config", variable=self.append_rc_to_chat_var).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(chat_input_frame, text="Save to KB", command=self.save_chat_to_knowledge).pack(side=tk.LEFT, padx=6)
         # Sync commands directly from the last chat response to the connected device
-        tk.Button(chat_input_frame, text="Sync Commands", command=self.sync_chat_commands).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(chat_input_frame, text="Sync Commands", command=self.sync_chat_commands).pack(side=tk.LEFT, padx=6)
 
         # Favor Chat side for visibility: ~35% AI Assistant, ~65% Chat
         self.after(100, lambda: right_split.sash_place(0, int(right_split.winfo_width() * 0.35), 0))
@@ -711,9 +741,9 @@ class NetApp(ctk.CTk):
         # --- Status Bar ---
         self.status_var = tk.StringVar()
         # Replace single label with a frame containing label + progress bar
-        self.status_frame = tk.Frame(self, bd=1, relief=tk.SUNKEN)
+        self.status_frame = ctk.CTkFrame(self)
         self.status_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        self.status_bar = tk.Label(self.status_frame, textvariable=self.status_var, anchor=tk.W)
+        self.status_bar = ctk.CTkLabel(self.status_frame, textvariable=self.status_var)
         self.status_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
         # Bottom progress bar (indeterminate) for visual task progress
         try:

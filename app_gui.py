@@ -660,11 +660,11 @@ class NetApp(ctk.CTk):
         context_frame.columnconfigure(1, weight=1)
         context_frame.columnconfigure(2, weight=1)
 
-        ctk.CTkSeparator(ai_assistant_frame).pack(fill='x', pady=5, padx=10)
+        ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
 
         # (Fetch Running Config moved to Chat pane)
         # (Moved context panes to Chat window above)
-        ctk.CTkSeparator(ai_assistant_frame).pack(fill='x', pady=5, padx=10)
+        ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
         ctk.CTkLabel(ai_assistant_frame, text="Your Request:").pack(pady=5, padx=10, anchor="w")
         self.ai_input = ctk.CTkEntry(ai_assistant_frame)
         self.ai_input.pack(pady=5, padx=10, fill="x")
@@ -1501,39 +1501,57 @@ class NetApp(ctk.CTk):
             self.fetch_ollama_models()
         else:
             self.ollama_model_combo.config(state=tk.DISABLED)
-            self.ollama_model_combo['values'] = []
+        try:
+            self.ollama_model_combo.configure(values=[])
+        except Exception:
+            pass
             self.ollama_model_combo.set('')
 
     def fetch_ollama_models(self):
         self.log_to_terminal("Fetching Ollama models...", "info")
         self.set_busy(True, "Fetching Ollama models…")
         try:
-            response = requests.get("http://localhost:11434/api/tags", timeout=3 )
+            response = requests.get("http://localhost:11434/api/tags", timeout=3)
             response.raise_for_status()
-            models = [m['name'] for m in response.json().get('models', [])]
+            models = [m.get('name') for m in response.json().get('models', []) if m.get('name')]
             if models:
-                self.ollama_model_combo['values'] = models
-                self.ollama_model_combo.set(models)
+                try:
+                    self.ollama_model_combo.configure(values=models)
+                except Exception:
+                    pass
+                self.ollama_model_combo.set(models[0])
                 self.log_to_terminal(f"Found {len(models)} Ollama models.", "info")
                 self.update_status("Ollama models loaded.")
             else:
-                self.ollama_model_combo['values'] = ["No models found"]
+                try:
+                    self.ollama_model_combo.configure(values=["No models found"])
+                except Exception:
+                    pass
                 self.ollama_model_combo.set("No models found")
                 self.update_status("Ollama: No models found.")
         except requests.exceptions.Timeout:
             self.log_to_terminal("Ollama server timed out. Is it running and responsive?", "error")
             self.update_status("Ollama server timed out.")
-            self.ollama_model_combo['values'] = ["Ollama server timeout"]
+            try:
+                self.ollama_model_combo.configure(values=["Ollama server timeout"])
+            except Exception:
+                pass
             self.ollama_model_combo.set("Ollama server timeout")
         except requests.exceptions.ConnectionError:
-            self.log_to_terminal("Ollama server not found at http://localhost:11434.", "error" )
+            self.log_to_terminal("Ollama server not found at http://localhost:11434.", "error")
             self.update_status("Ollama server not found.")
-            self.ollama_model_combo['values'] = ["Ollama server not found"]
+            try:
+                self.ollama_model_combo.configure(values=["Ollama server not found"])
+            except Exception:
+                pass
             self.ollama_model_combo.set("Ollama server not found")
         except Exception as e:
             self.log_to_terminal(f"Error fetching Ollama models: {e}", "error")
             self.update_status("Error fetching Ollama models.")
-            self.ollama_model_combo['values'] = ["Error fetching models"]
+            try:
+                self.ollama_model_combo.configure(values=["Error fetching models"])
+            except Exception:
+                pass
             self.ollama_model_combo.set("Error fetching models")
         finally:
             self.set_busy(False)
@@ -1546,7 +1564,10 @@ class NetApp(ctk.CTk):
                 return
             ports = serial.tools.list_ports.comports()
             available_ports = [port.device for port in ports if port.device]
-            self.com_port_combo['values'] = available_ports
+            try:
+                self.com_port_combo.configure(values=available_ports)
+            except Exception:
+                pass
             if available_ports and not self.com_port_combo.get():
                 self.com_port_combo.set(available_ports[0])
         except Exception as e:
@@ -3708,9 +3729,12 @@ class NetApp(ctk.CTk):
 
     def update_profile_list(self):
         profile_names = list(self.profiles.keys())
-        self.profile_combo['values'] = profile_names
+        try:
+            self.profile_combo.configure(values=profile_names)
+        except Exception:
+            pass
         if profile_names:
-            self.profile_combo.set(profile_names)
+            self.profile_combo.set(profile_names[0])
             self.load_selected_profile()
 
     def load_selected_profile(self, event=None):

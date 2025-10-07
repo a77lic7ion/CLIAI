@@ -436,60 +436,60 @@ class NetApp(ctk.CTk):
         main_pane.add(left_frame, width=600)
 
         conn_frame = ctk.CTkFrame(left_frame)
-        conn_frame.pack(pady=10, padx=10, fill="x")
+        conn_frame.pack(pady=6, padx=8, fill="x")
         ctk.CTkLabel(conn_frame, text="Connection", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=6, padx=5, pady=(6,4), sticky="w")
-        ctk.CTkLabel(conn_frame, text="Profile:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(conn_frame, text="Profile:").grid(row=1, column=0, padx=5, pady=3, sticky="w")
         self.profile_combo = ctk.CTkComboBox(conn_frame, state="normal")
-        self.profile_combo.grid(row=1, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
+        self.profile_combo.grid(row=1, column=1, columnspan=2, padx=5, pady=3, sticky="ew")
         try:
             self.profile_combo.configure(command=self.load_selected_profile)
         except Exception:
             pass
         # Connection type selector (Serial/SSH/Telnet)
-        ctk.CTkLabel(conn_frame, text="Conn Type:").grid(row=1, column=4, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(conn_frame, text="Conn Type:").grid(row=1, column=4, padx=5, pady=3, sticky="w")
         self.conn_type_var = tk.StringVar(value="Serial")
         self.conn_type_combo = ctk.CTkComboBox(conn_frame, values=["Serial", "SSH", "Telnet"], width=120)
-        self.conn_type_combo.grid(row=1, column=5, padx=5, pady=5, sticky="w")
+        self.conn_type_combo.grid(row=1, column=5, padx=5, pady=3, sticky="w")
         try:
             self.conn_type_combo.configure(command=self.on_conn_type_change)
         except Exception:
             pass
-        ctk.CTkLabel(conn_frame, text="COM Port:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(conn_frame, text="COM Port:").grid(row=2, column=0, padx=5, pady=3, sticky="w")
         self.com_port_combo = ctk.CTkComboBox(conn_frame, state="normal")
-        self.com_port_combo.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
-        ctk.CTkButton(conn_frame, text="Refresh", command=self.refresh_com_ports).grid(row=2, column=2, padx=5, pady=5)
-        ctk.CTkLabel(conn_frame, text="Baud:").grid(row=2, column=3, padx=5, pady=5, sticky="w")
+        self.com_port_combo.grid(row=2, column=1, padx=5, pady=3, sticky="ew")
+        ctk.CTkButton(conn_frame, text="Refresh", command=self.refresh_com_ports).grid(row=2, column=2, padx=5, pady=3)
+        ctk.CTkLabel(conn_frame, text="Baud:").grid(row=2, column=3, padx=5, pady=3, sticky="w")
         self.baud_combo = ctk.CTkComboBox(conn_frame, values=["9600","19200","38400","57600","115200"], width=100)
-        self.baud_combo.grid(row=2, column=4, padx=5, pady=5, sticky="w")
+        self.baud_combo.grid(row=2, column=4, padx=5, pady=3, sticky="w")
         self.baud_combo.set("9600")
         # Populate COM ports now that the combobox exists
         self.refresh_com_ports()
-        ctk.CTkLabel(conn_frame, text="Username:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(conn_frame, text="Username:").grid(row=3, column=0, padx=5, pady=3, sticky="w")
         self.user_entry = ctk.CTkEntry(conn_frame)
-        self.user_entry.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
-        ctk.CTkLabel(conn_frame, text="Password:").grid(row=3, column=2, padx=5, pady=5, sticky="w")
+        self.user_entry.grid(row=3, column=1, padx=5, pady=3, sticky="ew")
+        ctk.CTkLabel(conn_frame, text="Password:").grid(row=3, column=2, padx=5, pady=3, sticky="w")
         self.pass_entry = ctk.CTkEntry(conn_frame, show="*")
-        self.pass_entry.grid(row=3, column=3, padx=5, pady=5, sticky="ew")
+        self.pass_entry.grid(row=3, column=3, padx=5, pady=3, sticky="ew")
         # Manual login helper: autofill username/password and send to CLI
         self.auto_login_btn = ctk.CTkButton(conn_frame, text="Autofill & Send to CLI", command=self.autofill_send_to_cli)
-        self.auto_login_btn.grid(row=3, column=4, padx=5, pady=5, sticky="ew")
+        self.auto_login_btn.grid(row=3, column=4, padx=5, pady=3, sticky="ew")
 
-        ctk.CTkLabel(conn_frame, text="Enable Pass:").grid(row=4, column=0, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(conn_frame, text="Enable Pass:").grid(row=4, column=0, padx=5, pady=3, sticky="w")
         self.enable_pass_entry = ctk.CTkEntry(conn_frame, show="*")
-        self.enable_pass_entry.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
+        self.enable_pass_entry.grid(row=4, column=1, padx=5, pady=3, sticky="ew")
         # Network connection fields (used for SSH/Telnet)
-        ctk.CTkLabel(conn_frame, text="Host:").grid(row=4, column=2, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(conn_frame, text="Host:").grid(row=4, column=2, padx=5, pady=3, sticky="w")
         self.host_entry = ctk.CTkEntry(conn_frame)
-        self.host_entry.grid(row=4, column=3, padx=5, pady=5, sticky="ew")
-        ctk.CTkLabel(conn_frame, text="Port:").grid(row=4, column=4, padx=5, pady=5, sticky="w")
+        self.host_entry.grid(row=4, column=3, padx=5, pady=3, sticky="ew")
+        ctk.CTkLabel(conn_frame, text="Port:").grid(row=4, column=4, padx=5, pady=3, sticky="w")
         self.port_entry = ctk.CTkEntry(conn_frame, width=80)
-        self.port_entry.grid(row=4, column=5, padx=5, pady=5, sticky="w")
+        self.port_entry.grid(row=4, column=5, padx=5, pady=3, sticky="w")
 
         self.connect_btn = ctk.CTkButton(conn_frame, text="Connect", command=self.toggle_connection)
-        self.connect_btn.grid(row=5, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.connect_btn.grid(row=5, column=0, columnspan=2, padx=10, pady=4, sticky="ew")
         # Unified button: Enter privileged/config mode based on manufacturer
         self.enable_btn = ctk.CTkButton(conn_frame, text="Enter Privileged/Config Mode", command=self.enter_privileged_or_config_mode)
-        self.enable_btn.grid(row=5, column=2, columnspan=2, padx=10, pady=5, sticky="ew")
+        self.enable_btn.grid(row=5, column=2, columnspan=2, padx=10, pady=4, sticky="ew")
         conn_frame.columnconfigure(1, weight=1)
 
         profile_btn_frame = ctk.CTkFrame(conn_frame)
@@ -499,7 +499,7 @@ class NetApp(ctk.CTk):
         ctk.CTkButton(profile_btn_frame, text="Delete", command=self.delete_profile).pack(side=tk.LEFT, fill='x', expand=True)
 
         terminal_frame = ctk.CTkFrame(left_frame)
-        terminal_frame.pack(pady=10, padx=10, expand=True, fill="both")
+        terminal_frame.pack(pady=6, padx=8, expand=True, fill="both")
         ctk.CTkLabel(terminal_frame, text="Device Terminal", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(6,2))
         # Use CustomTkinter textbox for better theming and resizing
         self.terminal = ctk.CTkTextbox(terminal_frame)
@@ -547,42 +547,42 @@ class NetApp(ctk.CTk):
 
         # New top frame for side-by-side config sections
         top_right_frame = ctk.CTkFrame(right_master_frame)
-        top_right_frame.pack(fill="x", expand=False, pady=5, padx=5)
+        top_right_frame.pack(fill="x", expand=False, pady=4, padx=5)
 
         # AI Configuration (now on the left of the top-right frame)
         ai_config_frame = ctk.CTkFrame(top_right_frame)
         ai_config_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=(0, 5))
-        ctk.CTkLabel(ai_config_frame, text="AI Configuration", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, padx=5, pady=(6,4), sticky="w")
-
-        ctk.CTkLabel(ai_config_frame, text="Provider:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(ai_config_frame, text="AI Configuration", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, padx=5, pady=(4,2), sticky="w")
+        
+        ctk.CTkLabel(ai_config_frame, text="Provider:").grid(row=1, column=0, padx=5, pady=3, sticky="w")
         self.ai_provider_combo = ctk.CTkComboBox(ai_config_frame, values=["None", "Gemini", "OpenAI", "Mistral", "Claude", "Ollama", "Simulation"])
-        self.ai_provider_combo.grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+        self.ai_provider_combo.grid(row=1, column=1, padx=5, pady=3, sticky="ew")
         self.ai_provider_combo.set("Gemini")
         try:
             self.ai_provider_combo.configure(command=self.on_ai_provider_change)
         except Exception:
             pass
-        ctk.CTkLabel(ai_config_frame, text="API Key:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        ctk.CTkLabel(ai_config_frame, text="API Key:").grid(row=2, column=0, padx=5, pady=3, sticky="w")
         self.api_key_entry = ctk.CTkEntry(ai_config_frame, show="*")
-        self.api_key_entry.grid(row=2, column=1, padx=5, pady=5, sticky="ew")
-        ctk.CTkLabel(ai_config_frame, text="Ollama Model:").grid(row=3, column=0, padx=5, pady=5, sticky="w")
+        self.api_key_entry.grid(row=2, column=1, padx=5, pady=3, sticky="ew")
+        ctk.CTkLabel(ai_config_frame, text="Ollama Model:").grid(row=3, column=0, padx=5, pady=3, sticky="w")
         self.ollama_model_combo = ctk.CTkComboBox(ai_config_frame, state="disabled")
-        self.ollama_model_combo.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
-        ctk.CTkLabel(ai_config_frame, text="Gemini Model:").grid(row=4, column=0, padx=5, pady=5, sticky="w")
+        self.ollama_model_combo.grid(row=3, column=1, padx=5, pady=3, sticky="ew")
+        ctk.CTkLabel(ai_config_frame, text="Gemini Model:").grid(row=4, column=0, padx=5, pady=3, sticky="w")
         self.gemini_model_combo = ctk.CTkComboBox(ai_config_frame, values=["1.5-flash", "2.0-flash", "1.5-pro"])
-        self.gemini_model_combo.grid(row=4, column=1, padx=5, pady=5, sticky="ew")
+        self.gemini_model_combo.grid(row=4, column=1, padx=5, pady=3, sticky="ew")
         self.gemini_model_combo.set("2.0-flash")
         # Buttons: Set provider and Check API Key
         self.set_ai_btn = ctk.CTkButton(ai_config_frame, text="Set AI Provider", command=self.set_ai_provider)
-        self.set_ai_btn.grid(row=5, column=0, padx=5, pady=5, sticky="ew")
+        self.set_ai_btn.grid(row=5, column=0, padx=5, pady=3, sticky="ew")
         self.check_api_btn = ctk.CTkButton(ai_config_frame, text="Check API Key", command=self.check_api_key)
-        self.check_api_btn.grid(row=5, column=1, padx=5, pady=5, sticky="ew")
+        self.check_api_btn.grid(row=5, column=1, padx=5, pady=3, sticky="ew")
         ai_config_frame.columnconfigure(1, weight=1)
 
         # Terminal Options (moved from left frame to top-right)
         terminal_opts_frame = ctk.CTkFrame(top_right_frame)
         terminal_opts_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=(5, 0))
-        ctk.CTkLabel(terminal_opts_frame, text="Terminal Options", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=5, pady=(6,4))
+        ctk.CTkLabel(terminal_opts_frame, text="Terminal Options", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=5, pady=(4,2))
 
         ctk.CTkLabel(terminal_opts_frame, text="Wrap Mode:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
         self.term_wrap_combo = ctk.CTkComboBox(terminal_opts_frame, values=["Wrap (word)", "No wrap"], width=140)
@@ -592,19 +592,61 @@ class NetApp(ctk.CTk):
         except Exception:
             pass
         self.term_wrap_combo.grid(row=1, column=1, sticky="w", padx=5, pady=2)
+
+        # Compact AI Assistant context next to Terminal Options
+        ai_assist_top_frame = ctk.CTkFrame(top_right_frame)
+        ai_assist_top_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=(5, 0))
+        ctk.CTkLabel(ai_assist_top_frame, text="AI Assistant", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=5, pady=(6,4))
+        context_frame = ctk.CTkFrame(ai_assist_top_frame)
+        context_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=6, sticky="nsew")
+        try:
+            for c in range(0, 4):
+                context_frame.grid_columnconfigure(c, weight=1, uniform="buttons")
+        except Exception:
+            pass
+        ctk.CTkLabel(context_frame, text="Manufacturer:").grid(row=0, column=0, sticky="w")
+        # Use only a dropdown for manufacturer; remove free-text entry
+        self.man_combo = ctk.CTkComboBox(context_frame, values=["Cisco", "H3C", "Huawei", "Juniper", "Other"], command=self._on_manufacturer_combo_changed)
+        self.man_combo.grid(row=0, column=1, sticky="ew", padx=2)
+        # For compatibility, point man_entry to combo (get() works similarly)
+        self.man_entry = self.man_combo
+        ctk.CTkLabel(context_frame, text="Device Type:").grid(row=1, column=0, sticky="w")
+        self.type_entry = ctk.CTkEntry(context_frame)
+        self.type_entry.grid(row=1, column=1, sticky="ew", padx=2)
+        ctk.CTkLabel(context_frame, text="Model:").grid(row=2, column=0, sticky="w")
+        self.model_entry = ctk.CTkEntry(context_frame)
+        self.model_entry.grid(row=2, column=1, sticky="ew", padx=2)
+        ctk.CTkLabel(context_frame, text="Version:").grid(row=3, column=0, sticky="w")
+        self.ver_entry = ctk.CTkEntry(context_frame)
+        self.ver_entry.grid(row=3, column=1, sticky="ew", padx=2)
+
+        # Shortened button texts to fit
+        self.fetch_info_btn = ctk.CTkButton(context_frame, text="Fetch Info", command=self.fetch_device_info)
+        self.fetch_info_btn.grid(row=4, column=0, pady=5, sticky="ew")
+        self.build_db_btn = ctk.CTkButton(context_frame, text="Build DB", command=self.build_command_database)
+        self.build_db_btn.grid(row=4, column=1, pady=5, sticky="ew")
+        self.view_kb_btn = ctk.CTkButton(context_frame, text="View KB", command=self.show_knowledge_base_window)
+        self.view_kb_btn.grid(row=4, column=2, pady=5, sticky="ew")
+        self.import_json_btn = ctk.CTkButton(context_frame, text="Import CLI", command=self.import_cli_json)
+        self.import_json_btn.grid(row=4, column=3, pady=5, sticky="ew")
+        context_frame.columnconfigure(1, weight=1)
+        context_frame.columnconfigure(2, weight=1)
         font_frame = ctk.CTkFrame(terminal_opts_frame)
-        font_frame.grid(row=0, column=2, sticky="w", padx=5, pady=2)
-        ctk.CTkButton(font_frame, text="Font +", command=self.increase_terminal_font).pack(side=tk.LEFT)
-        ctk.CTkButton(font_frame, text="Font -", command=self.decrease_terminal_font).pack(side=tk.LEFT)
+        # Place font controls on their own row under the header
+        font_frame.grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        # Use a segmented control so + and − sit flush together
+        self.font_segment = ctk.CTkSegmentedButton(font_frame, values=["+", "-"], command=self._on_font_segment)
+        self.font_segment.pack(side=tk.LEFT)
         self.auto_pager_var = tk.BooleanVar(value=True)
-        ctk.CTkCheckBox(terminal_opts_frame, text="Auto-pager", variable=self.auto_pager_var).grid(row=2, column=0, sticky="w", padx=5, pady=2)
-        ctk.CTkButton(terminal_opts_frame, text="Next Page", command=self.send_pager_next).grid(row=2, column=1, sticky="w", padx=5, pady=2)
-        ctk.CTkButton(terminal_opts_frame, text="Stop Paging", command=self.send_pager_stop).grid(row=2, column=2, sticky="w", padx=5, pady=2)
-        ctk.CTkButton(terminal_opts_frame, text="Disable Paging", command=self.disable_paging).grid(row=2, column=3, sticky="w", padx=5, pady=2)
+        # Stack Terminal Options buttons vertically for compact layout
         self.fix_command_btn = ctk.CTkButton(terminal_opts_frame, text="Fix with AI", command=self.ai_fix_last_command, state=tk.DISABLED)
-        self.fix_command_btn.grid(row=2, column=0, sticky="w", padx=5, pady=5)
-        ctk.CTkButton(terminal_opts_frame, text="Clear", command=self.clear_terminal).grid(row=2, column=1, sticky="w", padx=5, pady=5)
-        ctk.CTkButton(terminal_opts_frame, text="Export…", command=self.export_terminal_chat).grid(row=2, column=2, sticky="w", padx=5, pady=5)
+        self.fix_command_btn.grid(row=3, column=0, sticky="ew", padx=5, pady=4)
+        ctk.CTkButton(terminal_opts_frame, text="Clear", command=self.clear_terminal).grid(row=4, column=0, sticky="ew", padx=5, pady=4)
+        ctk.CTkButton(terminal_opts_frame, text="Export…", command=self.export_terminal_chat).grid(row=5, column=0, sticky="ew", padx=5, pady=4)
+        ctk.CTkCheckBox(terminal_opts_frame, text="Auto-pager", variable=self.auto_pager_var).grid(row=6, column=0, sticky="w", padx=5, pady=2)
+        ctk.CTkButton(terminal_opts_frame, text="Next Page", command=self.send_pager_next).grid(row=7, column=0, sticky="w", padx=5, pady=2)
+        ctk.CTkButton(terminal_opts_frame, text="Stop Paging", command=self.send_pager_stop).grid(row=8, column=0, sticky="w", padx=5, pady=2)
+        ctk.CTkButton(terminal_opts_frame, text="Disable Paging", command=self.disable_paging).grid(row=9, column=0, sticky="w", padx=5, pady=2)
 
         # Apply requested defaults and initialize provider
         try:
@@ -622,43 +664,6 @@ class NetApp(ctk.CTk):
         right_split.add(ai_assistant_frame, minsize=300)
         # Header label to mimic LabelFrame caption
         ctk.CTkLabel(ai_assistant_frame, text="AI Assistant", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(8,0))
-        context_frame = ctk.CTkFrame(ai_assistant_frame)
-        context_frame.pack(pady=6, padx=10, fill='x')
-        # Evenly space the action buttons in row 4
-        try:
-            for c in range(0, 4):
-                context_frame.grid_columnconfigure(c, weight=1, uniform="buttons")
-        except Exception:
-            pass
-        ctk.CTkLabel(context_frame, text="Manufacturer:").grid(row=0, column=0, sticky="w")
-        # Group manufacturer Entry and Dropdown in a subframe so dropdown sits under the entry
-        man_field_frame = ctk.CTkFrame(context_frame)
-        man_field_frame.grid(row=0, column=1, sticky="ew", padx=2)
-        self.man_entry = ctk.CTkEntry(man_field_frame)
-        self.man_entry.pack(fill="x")
-        self.man_combo = ctk.CTkComboBox(man_field_frame, values=["Cisco", "H3C", "Huawei", "Juniper", "Other"], command=self._on_manufacturer_combo_changed)
-        self.man_combo.pack(fill="x", pady=2)
-        ctk.CTkLabel(context_frame, text="Device Type:").grid(row=1, column=0, sticky="w")
-        self.type_entry = ctk.CTkEntry(context_frame)
-        self.type_entry.grid(row=1, column=1, sticky="ew", padx=2)
-        ctk.CTkLabel(context_frame, text="Model:").grid(row=2, column=0, sticky="w")
-        self.model_entry = ctk.CTkEntry(context_frame)
-        self.model_entry.grid(row=2, column=1, sticky="ew", padx=2)
-        ctk.CTkLabel(context_frame, text="Version:").grid(row=3, column=0, sticky="w")
-        self.ver_entry = ctk.CTkEntry(context_frame)
-        self.ver_entry.grid(row=3, column=1, sticky="ew", padx=2)
-
-        self.fetch_info_btn = ctk.CTkButton(context_frame, text="Fetch Device Info", command=self.fetch_device_info)
-        self.fetch_info_btn.grid(row=4, column=0, pady=5, sticky="ew")
-        self.build_db_btn = ctk.CTkButton(context_frame, text="Build Cmd DB", command=self.build_command_database)
-        self.build_db_btn.grid(row=4, column=1, pady=5, sticky="ew")
-        self.view_kb_btn = ctk.CTkButton(context_frame, text="View KB", command=self.show_knowledge_base_window)
-        self.view_kb_btn.grid(row=4, column=2, pady=5, sticky="ew")
-        self.import_json_btn = ctk.CTkButton(context_frame, text="Import CLI JSON", command=self.import_cli_json)
-        self.import_json_btn.grid(row=4, column=3, pady=5, sticky="ew")
-
-        context_frame.columnconfigure(1, weight=1)
-        context_frame.columnconfigure(2, weight=1)
 
         ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
 
@@ -1311,9 +1316,9 @@ class NetApp(ctk.CTk):
         """Toggle the Build Cmd DB button into a Stop button while building."""
         try:
             if building:
-                self.build_db_btn.config(text="Stop Build", command=self.stop_command_database, state=tk.NORMAL)
+                self.build_db_btn.configure(text="Stop Build", command=self.stop_command_database, state=tk.NORMAL)
             else:
-                self.build_db_btn.config(text="Build Cmd DB", command=self.build_command_database, state=tk.NORMAL)
+                self.build_db_btn.configure(text="Build Cmd DB", command=self.build_command_database, state=tk.NORMAL)
         except Exception:
             pass
 
@@ -1488,24 +1493,24 @@ class NetApp(ctk.CTk):
 
     def on_ai_provider_change(self, event=None):
         provider = self.ai_provider_combo.get()
-        self.api_key_entry.config(state=tk.NORMAL if provider in ["Gemini", "OpenAI", "Mistral", "Claude"] else tk.DISABLED)
-        self.web_search_check.config(state=tk.NORMAL if provider == "Gemini" else tk.DISABLED)
+        self.api_key_entry.configure(state=tk.NORMAL if provider in ["Gemini", "OpenAI", "Mistral", "Claude"] else tk.DISABLED)
+        self.web_search_check.configure(state=tk.NORMAL if provider == "Gemini" else tk.DISABLED)
         # Enable Gemini model selection only for Gemini provider
         try:
-            self.gemini_model_combo.config(state="readonly" if provider == "Gemini" else tk.DISABLED)
+            self.gemini_model_combo.configure(state="readonly" if provider == "Gemini" else tk.DISABLED)
         except Exception:
             pass
         
         if provider == "Ollama":
-            self.ollama_model_combo.config(state="readonly")
+            self.ollama_model_combo.configure(state="readonly")
             self.fetch_ollama_models()
         else:
-            self.ollama_model_combo.config(state=tk.DISABLED)
+            self.ollama_model_combo.configure(state=tk.DISABLED)
         try:
             self.ollama_model_combo.configure(values=[])
         except Exception:
             pass
-            self.ollama_model_combo.set('')
+        self.ollama_model_combo.set('')
 
     def fetch_ollama_models(self):
         self.log_to_terminal("Fetching Ollama models...", "info")
@@ -1692,7 +1697,8 @@ class NetApp(ctk.CTk):
     def on_term_wrap_change(self, event=None):
         mode = self.term_wrap_combo.get()
         try:
-            self.terminal.config(wrap=tk.NONE if mode == "No wrap" else tk.WORD)
+            wrap_mode = 'none' if mode == "No wrap" else 'word'
+            self.terminal.configure(wrap=wrap_mode)
         except Exception:
             pass
 
@@ -1701,8 +1707,6 @@ class NetApp(ctk.CTk):
             sel = self.man_combo.get().strip()
             # Normalize to lowercase for internal handling
             normalized = sel.lower()
-            self.man_entry.delete(0, tk.END)
-            self.man_entry.insert(0, normalized)
             # Auto-populate Device Type based on mapping; blank for 'other'
             try:
                 dev_type = MANUFACTURER_TO_DEVICE_TYPE.get(normalized, "")
@@ -2012,6 +2016,15 @@ class NetApp(ctk.CTk):
             new_size = max(current - 1, 6)
             self.terminal_font_size = new_size
             self.terminal.configure(font=("Consolas", new_size))
+        except Exception:
+            pass
+
+    def _on_font_segment(self, value: str):
+        try:
+            if value == "+":
+                self.increase_terminal_font()
+            elif value == "-":
+                self.decrease_terminal_font()
         except Exception:
             pass
 
@@ -2356,7 +2369,7 @@ class NetApp(ctk.CTk):
                 self.connection.reset_input_buffer()
                 self.connection.reset_output_buffer()
                 self.is_connected = True
-                self.connect_btn.config(text="Disconnect")
+                self.connect_btn.configure(text="Disconnect")
                 self.log_to_terminal(f"Connected to {com_port}")
                 self.update_status(f"Connected to {com_port}")
                 self.run_precheck()
@@ -2397,7 +2410,7 @@ class NetApp(ctk.CTk):
                 self.connection = NetmikoAdapter(**nm_kwargs)
 
             self.is_connected = True
-            self.connect_btn.config(text="Disconnect")
+            self.connect_btn.configure(text="Disconnect")
             self.log_to_terminal(f"Connected to {ctype} {host}:{port}")
             self.update_status(f"Connected to {ctype} {host}:{port}")
             self.run_precheck()
@@ -2415,7 +2428,7 @@ class NetApp(ctk.CTk):
                 self.connection.close()
                 self.connection = None
                 self.is_connected = False
-                self.connect_btn.config(text="Connect")
+                self.connect_btn.configure(text="Connect")
                 self.log_to_terminal("Disconnected")
                 self.update_status("Disconnected")
             except Exception as e:
@@ -2482,7 +2495,7 @@ class NetApp(ctk.CTk):
                 # Check for errors to enable the fix button
                 if self._is_cli_error(text):
                     self.last_error_output = text
-                    self.fix_command_btn.config(state=tk.NORMAL)
+                    self.fix_command_btn.configure(state=tk.NORMAL)
 
         except queue.Empty:
             pass
@@ -2580,7 +2593,7 @@ class NetApp(ctk.CTk):
 
     def _send_command(self, cmd):
         # Reset the fixer state each time a new command is sent
-        self.fix_command_btn.config(state=tk.DISABLED)
+        self.fix_command_btn.configure(state=tk.DISABLED)
         self.last_manual_command = None
         self.last_error_output = None
 
@@ -2691,7 +2704,7 @@ class NetApp(ctk.CTk):
         
         self.ai_output.insert(tk.END, "------------------------\r\n")
         self.ai_output.insert(tk.END, "\n".join(correction_or_guidance))
-        self.fix_command_btn.config(state=tk.DISABLED)
+        self.fix_command_btn.configure(state=tk.DISABLED)
 
     def run_precheck(self):
         """Run precheck for serial connection and auto-login using GUI credentials.
@@ -2982,7 +2995,7 @@ class NetApp(ctk.CTk):
         self.chat_log.see(tk.END)
         self.update_status("Chat: commands generated")
 
-        self.fix_command_btn.config(state=tk.DISABLED) # Disable after use
+        self.fix_command_btn.configure(state=tk.DISABLED) # Disable after use
 
     def _send_cli_from_chat(self, cmd):
         """Send a single command from chat output to the connected device CLI."""
@@ -3405,8 +3418,7 @@ class NetApp(ctk.CTk):
             vendor_match = re.search(r"VENDOR_NAME\s*[:=]\s*([^\n]+)", relevant_output, re.IGNORECASE)
             if vendor_match:
                 try:
-                    self.man_entry.delete(0, tk.END)
-                    self.man_entry.insert(0, vendor_match.group(1).strip())
+                    self.man_entry.set(vendor_match.group(1).strip())
                 except Exception:
                     pass
             # manuinfo doesn't include software version; follow up with 'display version'
@@ -3745,7 +3757,10 @@ class NetApp(ctk.CTk):
             self.user_entry.delete(0, tk.END); self.user_entry.insert(0, profile.get('username', ''))
             self.pass_entry.delete(0, tk.END); self.pass_entry.insert(0, profile.get('password', ''))
             self.enable_pass_entry.delete(0, tk.END); self.enable_pass_entry.insert(0, profile.get('enable_password', ''))
-            self.man_entry.delete(0, tk.END); self.man_entry.insert(0, profile.get('manufacturer', ''))
+            try:
+                self.man_entry.set(profile.get('manufacturer', ''))
+            except Exception:
+                pass
             # New: connection type, host, and port
             try:
                 self.conn_type_var.set(profile.get('conn_type', self.conn_type_var.get() or 'Serial'))

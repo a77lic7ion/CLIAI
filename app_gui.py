@@ -493,12 +493,16 @@ class NetApp(tk.Tk):
             # Allow pressing Return to send the typed command from the input field
             try:
                 self.term_input.bind("<Return>", self.send_terminal_input)
+                # Bind Ctrl+C to send interrupt (ETX)
+                self.term_input.bind("<Control-c>", self._on_ctrl_c)
             except Exception:
                 pass
             tk.Button(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=6)
             tk.Button(term_input_frame, text="Send RETURN", command=self.send_enter_key).pack(side=tk.LEFT, padx=6)
             # New help button: sends a space then '?' and presses return
             tk.Button(term_input_frame, text="?", command=self.send_space_then_question).pack(side=tk.LEFT, padx=6)
+            # Ctrl+C button to interrupt long-running device output/commands
+            tk.Button(term_input_frame, text="Ctrl+C", command=self.send_ctrl_c).pack(side=tk.LEFT, padx=6)
             tk.Button(term_input_frame, text="Quit", command=self.send_quit_command).pack(side=tk.LEFT, padx=6)
         except Exception:
             pass
@@ -771,19 +775,33 @@ class NetApp(tk.Tk):
         except Exception as e:
             self.log_to_terminal(f"Failed to save available commands: {e}", "error")
 
-    def _save_command_branch_to_db(self, manufacturer, command_path, context, raw_output):
-        """Save a discovered command branch (command path and its '?' output) into the hierarchical command tree."""
-        if not self.db_conn or not manufacturer or not command_path:
+    def _save_command_branch_to_db(self, manufacturer, command_path, context, raw_output, conn=None):
+        """Save a discovered command branch (command path and its '?' output) into the hierarchical command tree.
+        Uses a provided SQLite connection when running in a worker thread to avoid cross-thread usage issues.
+        """
+        if not manufacturer or not command_path:
             return
+
+        local_conn = None
         try:
-            cursor = self.db_conn.cursor()
+            use_conn = conn if conn is not None else self.db_conn
+            if use_conn is None:
+                local_conn = sqlite3.connect('cli_cache.db')
+                use_conn = local_conn
+            cursor = use_conn.cursor()
             cursor.execute(
                 "INSERT OR REPLACE INTO command_tree (manufacturer, command_path, context, raw_output) VALUES (?, ?, ?, ?)",
                 (manufacturer, command_path, context or '', raw_output or '')
             )
-            self.db_conn.commit()
+            use_conn.commit()
         except Exception as e:
             self.log_to_terminal(f"Failed to save command branch: {e}", "error")
+        finally:
+            if local_conn:
+                try:
+                    local_conn.close()
+                except Exception:
+                    pass
 
     def _parse_help_tokens(self, help_text):
         """Parse CLI help ('?') output to extract possible next tokens/keywords.
@@ -946,7 +964,7 @@ class NetApp(tk.Tk):
                             t = self.run_device_command('show ?', timeout=6)
                         tokens = self._parse_help_tokens(t)
                         # Save the top-level branch itself
-                        self._save_command_branch_to_db(manuf, 'display' if manuf.lower()=='h3c' else 'show', context_guess, t)
+                        self._save_command_branch_to_db(manuf, 'display' if manuf.lower()=='h3c' else 'show', context_guess, t, conn=db_conn)
                     except Exception:
                         pass
 
@@ -976,7 +994,7 @@ class NetApp(tk.Tk):
 
                     # Persist branch with raw help output
                     try:
-                        self._save_command_branch_to_db(manuf, cmd_path, context_guess, help_out)
+                        self._save_command_branch_to_db(manuf, cmd_path, context_guess, help_out, conn=db_conn)
                     except Exception:
                         pass
 
@@ -1821,6 +1839,26 @@ class NetApp(tk.Tk):
             self.connection.write(b'?\r\n')
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send '?': {e}")
+
+    def send_ctrl_c(self):
+        """Send Ctrl+C (ETX, 0x03) to interrupt current device operation."""
+        try:
+            if not self.connection or not getattr(self, "is_connected", False):
+                messagebox.showerror("Error", "Not connected to any device.")
+                return
+            # Echo to terminal for user feedback
+            self.log_to_terminal("\n^C", "command")
+            # Transmit ETX; works for Serial, Telnet, and Netmiko channel
+            self.connection.write(b"\x03")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send Ctrl+C: {e}")
+
+    def _on_ctrl_c(self, event=None):
+        try:
+            self.send_ctrl_c()
+        except Exception:
+            pass
+        return "break"
 
     def send_quit_command(self):
         """Go back one mode step using vendor-aware command.

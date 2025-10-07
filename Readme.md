@@ -75,6 +75,7 @@ Quick Start
   - Type commands in the inline input and press `Enter` to send.
   - Use `Send RETURN` to just send Return.
   - Use `?` button to send space + `?` then Return to reveal next tokens.
+  - Use `Ctrl+C` (button or `Ctrl+C` in input field) to interrupt long-running output.
 - Use AI:
   - In Chat, enter a request, select provider/model, and submit.
   - Click per-command `Send to CLI` or use `Push AI Commands to Device` near the terminal.

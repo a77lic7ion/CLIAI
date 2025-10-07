@@ -98,7 +98,8 @@ API Key Checks
   - Lists available models to validate the key without needing a specific model.
 - Mistral
   - Requires an API key.
-  - Performs a lightweight chat request with `mistral-tiny`.
+  - Performs a lightweight chat request with `mistral-tiny` when SDK is installed.
+  - If SDK is not installed, falls back to REST by listing models.
 - Claude (Anthropic)
   - Requires an API key.
   - Performs a minimal messages call with `claude-3-opus-20240229`.

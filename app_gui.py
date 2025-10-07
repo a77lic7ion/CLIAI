@@ -1414,12 +1414,26 @@ class NetApp(tk.Tk):
                 messagebox.showerror("API Key", f"OpenAI check failed: {e}")
         elif provider == "Mistral":
             try:
-                if not MistralClient or not ChatMessage:
-                    raise RuntimeError("Mistral SDK not installed")
-                client = MistralClient(api_key=api_key)
-                # Use a tiny model for a quick ping
-                client.chat(model="mistral-tiny", messages=[ChatMessage(role="user", content="ping")])
-                messagebox.showinfo("API Key", "Mistral API key is valid and reachable.")
+                if MistralClient and ChatMessage:
+                    client = MistralClient(api_key=api_key)
+                    # Use a tiny model for a quick ping
+                    client.chat(model="mistral-tiny", messages=[ChatMessage(role="user", content="ping")])
+                    messagebox.showinfo("API Key", "Mistral API key is valid and reachable.")
+                else:
+                    # Fallback to REST: list models to validate key without SDK
+                    resp = requests.get(
+                        "https://api.mistral.ai/v1/models",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        timeout=20,
+                    )
+                    if resp.status_code == 200:
+                        messagebox.showinfo("API Key", "Mistral API key is valid and reachable.")
+                    elif resp.status_code == 429:
+                        messagebox.showinfo("API Key", "Mistral API key is valid, but quota is exhausted.")
+                    elif resp.status_code == 401:
+                        messagebox.showerror("API Key", "Unauthorized: API key invalid or not permitted.")
+                    else:
+                        messagebox.showerror("API Key", f"Error: HTTP {resp.status_code} - {resp.text}")
             except Exception as e:
                 messagebox.showerror("API Key", f"Mistral check failed: {e}")
         elif provider == "Claude":

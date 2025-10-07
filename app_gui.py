@@ -364,7 +364,8 @@ class NetApp(tk.Tk):
 
         self.connect_btn = tk.Button(conn_frame, text="Connect", command=self.toggle_connection)
         self.connect_btn.grid(row=4, column=0, columnspan=2, padx=10, pady=5, sticky="ew")
-        self.enable_btn = tk.Button(conn_frame, text="Enter Enable Mode", command=self.enter_enable_mode)
+        # Unified button: Enter privileged/config mode based on manufacturer
+        self.enable_btn = tk.Button(conn_frame, text="Enter Privileged/Config Mode", command=self.enter_privileged_or_config_mode)
         self.enable_btn.grid(row=4, column=2, columnspan=2, padx=10, pady=5, sticky="ew")
         conn_frame.columnconfigure(1, weight=1)
 
@@ -390,6 +391,7 @@ class NetApp(tk.Tk):
             self.term_input.pack(side=tk.LEFT, fill="x", expand=True)
             tk.Button(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=6)
             tk.Button(term_input_frame, text="Send RETURN", command=self.send_enter_key).pack(side=tk.LEFT, padx=6)
+            tk.Button(term_input_frame, text="Quit", command=self.send_quit_command).pack(side=tk.LEFT, padx=6)
         except Exception:
             pass
 
@@ -397,6 +399,7 @@ class NetApp(tk.Tk):
         term_actions = tk.Frame(terminal_frame)
         term_actions.pack(fill="x", padx=10, pady=6)
         tk.Button(term_actions, text="Push AI Commands to Device", command=self.push_ai_commands).pack(side=tk.LEFT, fill="x", expand=True)
+        tk.Button(term_actions, text="Save Config", command=self.save_device_config).pack(side=tk.LEFT, padx=6)
 
         # --- Right-hand side layout --- 
         right_master_frame = tk.Frame(main_pane)
@@ -512,8 +515,6 @@ class NetApp(tk.Tk):
         # Reduce AI output pane height to favor Chat context visibility
         self.ai_output = scrolledtext.ScrolledText(ai_assistant_frame, wrap=tk.WORD, height=6, font=("Consolas", 10))
         self.ai_output.pack(pady=10, padx=10, expand=True, fill="both")
-        self.push_to_device_btn = tk.Button(ai_assistant_frame, text="Push to Connected Device", command=self.push_ai_commands, state=tk.DISABLED)
-        self.push_to_device_btn.pack(pady=10, padx=10, fill="x")
 
         # Chat pane: ask questions, get backend answers, and generate commands for changes
         chat_frame = tk.LabelFrame(right_split, text="Chat", relief=tk.GROOVE)
@@ -1364,6 +1365,24 @@ class NetApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send ENTER: {e}")
 
+    def send_quit_command(self):
+        """Go back one mode step using vendor-aware command.
+
+        - H3C/Huawei: send 'quit' (VRP system-view/feature view back step)
+        - Cisco/Juniper/others: send 'exit'
+        """
+        try:
+            if not self.connection or not getattr(self, "is_connected", False):
+                messagebox.showerror("Error", "Not connected to any device.")
+                return
+
+            manufacturer = (self.man_entry.get() or '').strip().lower()
+            cmd = 'quit' if ('h3c' in manufacturer or 'huawei' in manufacturer) else 'exit'
+            # Reuse core send path for consistency (echo + CRLF + prompt refresh)
+            self._send_command(cmd)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send quit/exit: {e}")
+
     def autofill_send_to_cli(self):
         """Send username and password to the device, each followed by RETURN.
 
@@ -1774,11 +1793,9 @@ class NetApp(tk.Tk):
         if is_fix:
             self.ai_output.insert(tk.END, "AI Corrected Command:\r\n")
             self.update_status("AI correction received.")
-            self.push_to_device_btn.config(state=tk.NORMAL)
         else:
             self.ai_output.insert(tk.END, "AI Guidance:\r\n")
             self.update_status("AI guidance received.")
-            self.push_to_device_btn.config(state=tk.DISABLED)
         
         self.ai_output.insert(tk.END, "------------------------\r\n")
         self.ai_output.insert(tk.END, "\n".join(correction_or_guidance))
@@ -2041,7 +2058,6 @@ class NetApp(tk.Tk):
                 self.chat_log.insert(tk.END, line + "\n")
             self.chat_log.insert(tk.END, "\n")
             self.ai_output.delete('1.0', tk.END)
-            self.push_to_device_btn.config(state=tk.DISABLED)
             self.last_chat_response = guidance_response # Save for KB
 
         else:  # Success on the first try, we have commands
@@ -2066,7 +2082,6 @@ class NetApp(tk.Tk):
         # Do not mirror into AI push pane; keep Push-to-Device disabled for chat output
         try:
             self.ai_output.delete('1.0', tk.END)
-            self.push_to_device_btn.config(state=tk.DISABLED)
         except Exception:
             pass
         self.chat_log.see(tk.END)
@@ -2124,6 +2139,88 @@ class NetApp(tk.Tk):
                 pass
             self.set_busy(False)
             self.update_status("Sync complete")
+
+    def enter_privileged_or_config_mode(self):
+        """Enter vendor-appropriate privileged/config mode.
+
+        - Cisco: send 'enable' and then the Enable password.
+        - H3C/Huawei: send 'system-view'.
+        - Juniper: send 'configure'.
+        """
+        if not self.connection or not getattr(self, "is_connected", False):
+            messagebox.showerror("Error", "Not connected to any device.")
+            return
+
+        manufacturer = (self.man_entry.get() or '').strip().lower()
+        enable_password = (self.enable_pass_entry.get() or '')
+
+        try:
+            if 'cisco' in manufacturer:
+                # Cisco enable
+                self.log_to_terminal("\n> enable\r\n", "command")
+                self.connection.write(b"enable\r\n")
+                time.sleep(0.4)
+                if enable_password:
+                    self.log_to_terminal("> ********\r\n", "command")
+                    self.connection.write((enable_password + "\r\n").encode())
+            elif 'h3c' in manufacturer or 'huawei' in manufacturer:
+                # H3C/Huawei VRP
+                self.log_to_terminal("\n> system-view\r\n", "command")
+                self.connection.write(b"system-view\r\n")
+            elif 'juniper' in manufacturer:
+                # Junos
+                self.log_to_terminal("\n> configure\r\n", "command")
+                self.connection.write(b"configure\r\n")
+            else:
+                # Fallback: try 'enable' then 'system-view'
+                self.log_to_terminal("\n> enable (fallback)\r\n", "command")
+                self.connection.write(b"enable\r\n")
+                time.sleep(0.3)
+                if enable_password:
+                    self.connection.write((enable_password + "\r\n").encode())
+                time.sleep(0.3)
+                self.log_to_terminal("> system-view (fallback)\r\n", "command")
+                self.connection.write(b"system-view\r\n")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to enter mode: {e}")
+
+    def save_device_config(self):
+        """Run the vendor-appropriate save/commit command to persist configuration."""
+        if not self.connection or not getattr(self, "is_connected", False):
+            messagebox.showerror("Error", "Not connected to any device.")
+            return
+
+        manufacturer = (self.man_entry.get() or '').strip().lower()
+        try:
+            if 'cisco' in manufacturer:
+                # Use 'write memory' for IOS
+                self.log_to_terminal("\n> write memory\r\n", "command")
+                self.connection.write(b"write memory\r\n")
+            elif 'h3c' in manufacturer or 'huawei' in manufacturer:
+                # H3C/Huawei typically 'save' with confirmation
+                self.log_to_terminal("\n> save\r\n", "command")
+                self.connection.write(b"save\r\n")
+                time.sleep(0.4)
+                # Attempt to confirm automatically
+                try:
+                    self.connection.write(b"y\r\n")
+                except Exception:
+                    pass
+            elif 'juniper' in manufacturer:
+                # Junos commit
+                self.log_to_terminal("\n> commit\r\n", "command")
+                self.connection.write(b"commit\r\n")
+            else:
+                # Generic attempt
+                self.log_to_terminal("\n> save (generic)\r\n", "command")
+                self.connection.write(b"save\r\n")
+                time.sleep(0.4)
+                try:
+                    self.connection.write(b"y\r\n")
+                except Exception:
+                    pass
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save config: {e}")
 
     def fetch_running_config(self):
         if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:

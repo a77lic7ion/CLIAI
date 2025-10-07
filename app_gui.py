@@ -1376,7 +1376,9 @@ class NetApp(tk.Tk):
     def check_api_key(self):
         provider = self.ai_provider_combo.get()
         api_key = self.api_key_entry.get().strip()
-        if not api_key:
+        # Providers requiring a key
+        providers_require_key = {"Gemini", "OpenAI", "Mistral", "Claude"}
+        if provider in providers_require_key and not api_key:
             messagebox.showerror("Error", "API Key is required to check.")
             return
         if provider == "Gemini":
@@ -1400,8 +1402,47 @@ class NetApp(tk.Tk):
                         messagebox.showerror("API Key", f"Error: HTTP {resp.status_code} - {resp.text}")
             except Exception as e:
                 messagebox.showerror("API Key", f"Check failed: {e}")
+        elif provider == "OpenAI":
+            try:
+                if not OpenAI:
+                    raise RuntimeError("OpenAI SDK not installed")
+                client = OpenAI(api_key=api_key)
+                # Listing models avoids dependency on a specific model name
+                _ = client.models.list()
+                messagebox.showinfo("API Key", "OpenAI API key is valid and reachable.")
+            except Exception as e:
+                messagebox.showerror("API Key", f"OpenAI check failed: {e}")
+        elif provider == "Mistral":
+            try:
+                if not MistralClient or not ChatMessage:
+                    raise RuntimeError("Mistral SDK not installed")
+                client = MistralClient(api_key=api_key)
+                # Use a tiny model for a quick ping
+                client.chat(model="mistral-tiny", messages=[ChatMessage(role="user", content="ping")])
+                messagebox.showinfo("API Key", "Mistral API key is valid and reachable.")
+            except Exception as e:
+                messagebox.showerror("API Key", f"Mistral check failed: {e}")
+        elif provider == "Claude":
+            try:
+                if not anthropic:
+                    raise RuntimeError("Anthropic SDK not installed")
+                client = anthropic.Anthropic(api_key=api_key)
+                client.messages.create(model="claude-3-opus-20240229", max_tokens=16, messages=[{"role": "user", "content": "ping"}])
+                messagebox.showinfo("API Key", "Claude API key is valid and reachable.")
+            except Exception as e:
+                messagebox.showerror("API Key", f"Claude check failed: {e}")
+        elif provider == "Ollama":
+            try:
+                if not ollama:
+                    raise RuntimeError("Ollama SDK not installed")
+                client = ollama.Client(host='http://localhost:11434')
+                # Ensure Ollama daemon reachable and models listable
+                _ = client.list()
+                messagebox.showinfo("Ollama", "Ollama is reachable at http://localhost:11434.")
+            except Exception as e:
+                messagebox.showerror("Ollama", f"Ollama host check failed: {e}")
         else:
-            messagebox.showinfo("API Key", "Check is currently available for Gemini only.")
+            messagebox.showinfo("API Key", "No API key required for this provider.")
 
     def toggle_connection(self):
         if self.connection:

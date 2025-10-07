@@ -83,6 +83,36 @@ Quick Start
   - Use `Quit` to step back one mode level.
   - Click `Save Config` to persist changes.
 
+AI Providers
+- Supported: Gemini, OpenAI, Mistral, Claude, Ollama, Simulation
+- Configure in the UI: select provider, enter API key if required, choose model.
+
+API Key Checks
+- Use the `Check API Key` button to validate connectivity and credentials for the selected provider.
+- Gemini
+  - Requires an API key.
+  - Sends a minimal request via the Gemini-compatible OpenAI endpoint.
+  - Reports success, quota exhaustion, or authorization errors.
+- OpenAI
+  - Requires an API key.
+  - Lists available models to validate the key without needing a specific model.
+- Mistral
+  - Requires an API key.
+  - Performs a lightweight chat request with `mistral-tiny`.
+- Claude (Anthropic)
+  - Requires an API key.
+  - Performs a minimal messages call with `claude-3-opus-20240229`.
+- Ollama
+  - No API key required.
+  - Verifies the local daemon at `http://localhost:11434` and lists models.
+- Simulation
+  - No API key or connectivity required.
+
+Common errors
+- `Unauthorized`: invalid or missing API key for the chosen provider.
+- `Quota exceeded` or `Rate limit`: key is valid but usage limits are reached.
+- `Host unreachable`: for Ollama, ensure the daemon is running locally.
+
 Command Database
 - Build process:
   - Click `Build Command Database` to run two phases:

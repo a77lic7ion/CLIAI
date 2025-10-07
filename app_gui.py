@@ -1586,7 +1586,9 @@ class NetApp(tk.Tk):
 
         For H3C/Huawei VRP, repeatedly send 'quit' to back out of feature views
         until the bracketed prompt no longer contains a '-' segment.
-        For other vendors, we avoid auto-exit to prevent accidental logout.
+        For Cisco/Arista IOS-like prompts, send 'end' and 'exit' as needed to leave (config*) modes.
+        For Juniper, detect '[edit …]' and use 'top' then 'exit' to leave configuration.
+        For other vendors, only wake the line to avoid accidental logout.
         """
         try:
             manuf = (manufacturer or '').lower()
@@ -1634,8 +1636,78 @@ class NetApp(tk.Tk):
                     except Exception:
                         last_line = ''
                     attempts += 1
+            elif ('cisco' in manuf or 'arista' in manuf):
+                # Cisco/Arista: leave any (config*) submode; prefer 'end' to jump to exec
+                def in_config_prompt(s: str):
+                    return '(config' in s
+
+                # If clearly in config, send 'end' once
+                if in_config_prompt(last_line):
+                    try:
+                        self.connection.write(b"end\r\n")
+                    except Exception:
+                        pass
+                    time.sleep(0.2)
+                    # Read a short burst to update terminal
+                    t0 = time.time()
+                    while time.time() - t0 < 0.5:
+                        try:
+                            waiting = self.connection.in_waiting
+                        except Exception:
+                            waiting = 0
+                        if waiting:
+                            try:
+                                chunk = self.connection.read(waiting).decode('utf-8', errors='ignore')
+                                self.log_to_terminal(chunk, 'output')
+                            except Exception:
+                                pass
+                        time.sleep(0.08)
+                    try:
+                        last_line = self.terminal.get("end-2l", "end-1l").strip()
+                    except Exception:
+                        last_line = ''
+                    # If still stuck in a deeper config, use 'exit' a few times
+                    tries = 0
+                    while in_config_prompt(last_line) and tries < 3:
+                        try:
+                            self.connection.write(b"exit\r\n")
+                        except Exception:
+                            break
+                        time.sleep(0.2)
+                        tries += 1
+                        try:
+                            last_line = self.terminal.get("end-2l", "end-1l").strip()
+                        except Exception:
+                            last_line = ''
+                else:
+                    # Not obviously in config; just wake the line
+                    try:
+                        self.connection.write(b"\r\n")
+                    except Exception:
+                        pass
+            elif ('juniper' in manuf):
+                # Juniper: detect '[edit ...]' in recent lines; then 'top' and 'exit'
+                try:
+                    recent = self.terminal.get('end-8l', 'end-1l')
+                except Exception:
+                    recent = ''
+                def in_edit_mode(text: str):
+                    return '[edit' in text
+                if in_edit_mode(recent):
+                    try:
+                        self.connection.write(b"top\r\n")
+                        time.sleep(0.1)
+                        self.connection.write(b"exit\r\n")
+                    except Exception:
+                        pass
+                else:
+                    # Wake line only
+                    try:
+                        self.connection.write(b"\r\n")
+                    except Exception:
+                        pass
             else:
-                # For Cisco/Juniper/others, do not auto-exit; simply ensure line is awake
+                # Unknown/other vendors: wake the line only
                 try:
                     self.connection.write(b"\r\n")
                 except Exception:

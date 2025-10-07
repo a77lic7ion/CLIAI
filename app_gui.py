@@ -68,7 +68,7 @@ class AIProvider:
         except Exception as e:
             messagebox.showerror("AI Initialization Error", f"Failed to initialize {self.provider}: {e}")
 
-    def get_commands(self, user_request, manufacturer, model, version, device_type=None, running_config=None, use_web_search=False, ollama_model='llama3', gemini_model=None, prompt_style='default'):
+    def get_commands(self, user_request, manufacturer, model, version, device_type=None, running_config=None, available_commands=None, use_web_search=False, ollama_model='llama3', gemini_model=None, prompt_style='default'):
         if self.provider == "None": return ["# AI not configured."]
         if self.provider == "Simulation": return self.run_simulation(user_request)
 
@@ -84,14 +84,24 @@ class AIProvider:
 ---
 {running_config}
 ---
-Based on the configuration above, and the user's request below, generate the necessary commands."""
+"""
+
+        available_commands_context = ""
+        if available_commands and available_commands.strip():
+            available_commands_context = f"""**AVAILABLE COMMANDS IN CURRENT MODE:**
+---
+{available_commands}
+---
+"""
+
+        final_context = f"{config_context}{available_commands_context}Based on the context above, and the user's request below, generate the necessary commands."
 
         # --- A much more forceful and explicit system prompt ---
         if prompt_style == 'guidance':
             system_prompt = f"""
             You are a world-class network engineering expert AI, acting as a helpful assistant. Your task is to provide clear, detailed, and helpful guidance for network configuration tasks.
 
-            {config_context}
+            {final_context}
 
             **CONTEXT:** The user is working with a **{manufacturer.upper()} {device_type.upper() if device_type else ''}** device. Your advice should be tailored to this vendor and device type.
 
@@ -105,7 +115,7 @@ Based on the configuration above, and the user's request below, generate the nec
             system_prompt = f"""
             You are a network command correction expert for {manufacturer.upper()} {device_type.upper() if device_type else ''} devices. The user executed a command and received an error. Your task is to provide only the single, corrected, executable CLI command that the user likely intended to run.
 
-            {config_context}
+            {final_context}
 
             **USER'S COMMAND:** {user_request.split('ERR_SEPARATOR')[0]}
             **DEVICE ERROR MESSAGE:** {user_request.split('ERR_SEPARATOR')[1]}
@@ -121,7 +131,7 @@ Based on the configuration above, and the user's request below, generate the nec
             system_prompt = f"""
             You are a world-class network engineering expert AI. Your one and only task is to generate precise, executable CLI commands for a specific network device.
 
-            {config_context}
+            {final_context}
 
             **CRITICAL CONTEXT:** The target device is a **{manufacturer.upper()} {device_type.upper() if device_type else ''}** device. All commands you generate **MUST** use the correct syntax for this specific platform.
 
@@ -368,6 +378,7 @@ class NetApp(tk.Tk):
         self.term_input.pack(side=tk.LEFT, fill="x", expand=True)
         self.term_input.bind("<Return>", self.send_terminal_input)
         tk.Button(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=5)
+        tk.Button(term_input_frame, text="Send ENTER", command=self.send_enter_key).pack(side=tk.LEFT, padx=5)
 
         # --- Right-hand side layout --- 
         right_master_frame = tk.Frame(main_pane)
@@ -470,6 +481,11 @@ class NetApp(tk.Tk):
         self.fetch_config_btn.pack(pady=5, padx=10, fill="x")
         self.running_config_text = scrolledtext.ScrolledText(ai_assistant_frame, wrap=tk.WORD, height=8, font=("Consolas", 9))
         self.running_config_text.pack(pady=5, padx=10, expand=True, fill="both")
+
+        self.fetch_q_btn = tk.Button(ai_assistant_frame, text="Fetch '?' Commands for AI Context", command=self.fetch_available_commands)
+        self.fetch_q_btn.pack(pady=5, padx=10, fill="x")
+        self.available_commands_text = scrolledtext.ScrolledText(ai_assistant_frame, wrap=tk.WORD, height=6, font=("Consolas", 9))
+        self.available_commands_text.pack(pady=5, padx=10, expand=True, fill="both")
 
         ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
         tk.Label(ai_assistant_frame, text="Your Request:").pack(pady=5, padx=10, anchor="w")
@@ -1124,6 +1140,14 @@ class NetApp(tk.Tk):
         except Exception:
             pass
 
+    def send_enter_key(self):
+        """Sends a single ENTER (CR+LF) to the device."""
+        try:
+            if self.connection and getattr(self, "is_connected", False):
+                self.connection.write(b'\r\n')
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to send ENTER: {e}")
+
     def connect(self):
         com_port = self.com_port_combo.get()
         username = self.user_entry.get()
@@ -1370,6 +1394,7 @@ class NetApp(tk.Tk):
             self.ver_entry.get(),
             device_type=self.type_entry.get(),
             running_config=self.running_config_text.get('1.0', tk.END),
+            available_commands=self.available_commands_text.get('1.0', tk.END),
             use_web_search=self.use_web_search_var.get(),
             ollama_model=self.ollama_model_combo.get(),
             gemini_model=self.get_selected_gemini_model_full()
@@ -1530,6 +1555,36 @@ class NetApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to fetch running-config: {e}")
             self.update_status("Failed to fetch running-config.")
+
+    def fetch_available_commands(self):
+        if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:
+            messagebox.showerror("Error", "Not connected to any device.")
+            return
+
+        self.update_status("Fetching available commands with '?'...")
+        self.log_to_terminal("\n>>> Fetching available commands with '?'...", "info")
+        
+        try:
+            # Use a long timeout to capture potentially paginated output
+            commands_output = self.run_device_command('?', timeout=20)
+            self.available_commands_text.delete('1.0', tk.END)
+            self.available_commands_text.insert(tk.END, commands_output)
+            self.update_status("Available commands fetched.")
+            self.log_to_terminal("Available commands fetched and added to AI context.", "info")
+
+            # Try to determine context from the prompt to save to KB
+            last_line = self.terminal.get("end-2l", "end-1l").strip()
+            category = "Available Commands"
+            if last_line.startswith('[') and last_line.endswith(']'):
+                category += " - System View"
+            elif last_line.startswith('<') and last_line.endswith('>'):
+                category += " - User View"
+            
+            self._save_knowledge_to_db(self.man_entry.get(), category, commands_output.split('\n'))
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to fetch available commands: {e}")
+            self.update_status("Failed to fetch available commands.")
 
     def fetch_device_info(self):
         if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:
@@ -1719,7 +1774,7 @@ class NetApp(tk.Tk):
             return
         
         commands_text = self.ai_output.get("1.0", tk.END)
-        lines = commands_text.split("------------------------\r\n")
+        lines = commands_text.split("------------------------")
         if len(lines) < 2:
             messagebox.showinfo("Info", "No commands to push.")
             return
@@ -1987,7 +2042,7 @@ class NetApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send enable commands: {e}")
 
-    def show_knowledge_base_window(self):
+        self.update_status(f
         kb_window = tk.Toplevel(self)
         kb_window.title("Knowledge Base Browser")
         kb_window.geometry("800x600")
@@ -1995,6 +2050,7 @@ class NetApp(tk.Tk):
         top_frame = tk.Frame(kb_window)
         top_frame.pack(fill='x', padx=10, pady=5)
         tk.Button(top_frame, text="Refresh", command=lambda: self._populate_kb_viewer(tree)).pack(side=tk.LEFT)
+        tk.Button(top_frame, text="Import from JSON...", command=lambda: self.import_knowledge_from_json(tree)).pack(side=tk.LEFT, padx=10)
 
         pane = tk.PanedWindow(kb_window, orient=tk.VERTICAL, sashrelief=tk.RAISED)
         pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)

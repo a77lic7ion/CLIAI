@@ -99,17 +99,17 @@ class AIProvider:
         # --- A much more forceful and explicit system prompt ---
         if prompt_style == 'guidance':
             system_prompt = f"""
-            You are a world-class network engineering expert AI, acting as a helpful assistant. Your task is to provide clear, detailed, and helpful guidance for network configuration tasks.
+            You are a helpful network agent with 30 years of hands-on experience across Huawei, Juniper, Cisco, and H3C devices. Act as a senior network engineer: explain clearly, troubleshoot configurations, and provide practical, vendor-accurate guidance.
 
             {final_context}
 
-            **CONTEXT:** The user is working with a **{manufacturer.upper()} {device_type.upper() if device_type else ''}** device. Your advice should be tailored to this vendor and device type.
+            **CONTEXT:** The user is working with a **{manufacturer.upper()} {device_type.upper() if device_type else ''}** device. Tailor all guidance to this vendor and device type.
 
             **YOUR DIRECTIVES:**
-            1.  **BE HELPFUL AND EXPLANATORY:** The user is asking a general question. Do not just provide commands. Explain the concepts, outline the steps involved, and provide examples.
-            2.  **ASK FOR DETAILS (if needed):** If the user's request is missing critical information (like IP addresses), explain what information is needed and why. Provide placeholders in your examples (e.g., `<Your_IP_Address>`).
-            3.  **STRUCTURE YOUR RESPONSE:** Use formatting like lists, steps, and code blocks to make your answer easy to read and follow.
-            4.  **USE MARKDOWN:** You can use Markdown for formatting. Use code blocks (```) for command examples.
+            1.  **BE HELPFUL AND EXPLANATORY:** The user is asking a general question. Do not just provide commands. Explain concepts, outline steps, and provide examples.
+            2.  **ASK FOR DETAILS (if needed):** If the request is missing critical info (e.g., IPs), state what is needed and why. Use placeholders like `<Your_IP_Address>`.
+            3.  **STRUCTURE YOUR RESPONSE:** Use lists/steps and fenced code blocks for command examples.
+            4.  **VENDOR ACCURACY:** Ensure examples and guidance align with {manufacturer.upper()} syntax and behaviors.
             """
         elif prompt_style == 'fix_command':
             system_prompt = f"""
@@ -129,22 +129,22 @@ class AIProvider:
             """
         else: # Default prompt
             system_prompt = f"""
-            You are a world-class network engineering expert AI. Your one and only task is to generate precise, executable CLI commands for a specific network device.
+            You are a helpful network agent with 30 years of experience across Huawei, Juniper, Cisco, and H3C. Your task is to generate precise, executable CLI commands tailored to the user's exact platform and context.
 
             {final_context}
 
-            **CRITICAL CONTEXT:** The target device is a **{manufacturer.upper()} {device_type.upper() if device_type else ''}** device. All commands you generate **MUST** use the correct syntax for this specific platform.
+            **CRITICAL CONTEXT:** The target device is a **{manufacturer.upper()} {device_type.upper() if device_type else ''}** device. All commands you generate **MUST** use the correct syntax for this platform.
 
             **DEVICE DETAILS:** {device_context}
 
             **YOUR DIRECTIVES:**
-            1.  **PRIORITIZE THE PLATFORM:** The user-provided manufacturer and device type ({manufacturer.upper()} {device_type.upper() if device_type else ''}) are the most important pieces of information. Your output must be 100% correct for this platform.
-            2.  **COMMANDS ONLY:** Your entire response must be only the CLI commands needed to achieve the user's goal.
-            3.  **NO EXPLANATIONS:** Do not add any descriptive text, apologies, or introductory sentences like "Here are the commands...".
+            1.  **PRIORITIZE THE PLATFORM:** The user-provided manufacturer/device type ({manufacturer.upper()} {device_type.upper() if device_type else ''}) are primary. Your output must be correct for this platform.
+            2.  **COMMANDS ONLY:** Respond only with the CLI commands needed to achieve the user's goal.
+            3.  **NO EXPLANATIONS:** Do not add descriptive text, apologies, or intro sentences.
             4.  **NO MARKDOWN:** Do not use markdown code blocks (```).
-            5.  **ONE COMMAND PER LINE:** Each command must be on a new line.
-            6.  **HANDLE AMBIGUITY:** If the request is unclear or cannot be fulfilled, return a single line starting with '# AI Error:' followed by a brief explanation.
-            7.  **ASSUME PRIVILEGED MODE:** The session is already in privileged mode. Do not include mode-entry commands like 'enable' (Cisco) or 'system-view' (H3C). Generate only the operational/configuration commands required.
+            5.  **ONE COMMAND PER LINE:** Each command on a new line.
+            6.  **HANDLE AMBIGUITY:** If unclear, return a single line starting with '# AI Error:' and a brief reason.
+            7.  **ASSUME PRIVILEGED MODE:** Do not include mode-entry commands like 'enable' (Cisco) or 'system-view' (H3C).
 
             **Example for H3C:**
             User Request: create vlan 100
@@ -553,6 +553,8 @@ class NetApp(tk.Tk):
         self.append_rc_to_chat_var = tk.BooleanVar(value=False)
         tk.Checkbutton(chat_input_frame, text="Append Running Config", variable=self.append_rc_to_chat_var).pack(side=tk.LEFT, padx=6)
         tk.Button(chat_input_frame, text="Save to KB", command=self.save_chat_to_knowledge).pack(side=tk.LEFT, padx=6)
+        # Sync commands directly from the last chat response to the connected device
+        tk.Button(chat_input_frame, text="Sync Commands", command=self.sync_chat_commands).pack(side=tk.LEFT, padx=6)
 
         # Favor Chat side for visibility: ~35% AI Assistant, ~65% Chat
         self.after(100, lambda: right_split.sash_place(0, int(right_split.winfo_width() * 0.35), 0))
@@ -2045,26 +2047,83 @@ class NetApp(tk.Tk):
         else:  # Success on the first try, we have commands
             self.chat_log.insert(tk.END, "AI: Proposed commands:\n")
             for cmd in commands:
+                # Insert command text
                 self.chat_log.insert(tk.END, cmd + "\n")
+                # Append a per-command Send-to-CLI button
+                try:
+                    btn = tk.Button(self.chat_log, text="Send to CLI", command=lambda c=cmd: self._send_cli_from_chat(c))
+                    self.chat_log.window_create(tk.END, window=btn)
+                    self.chat_log.insert(tk.END, "\n")
+                except Exception:
+                    # Fallback: just note the action if button cannot be created
+                    self.chat_log.insert(tk.END, "(Use Sync Commands or copy-paste to CLI)\n")
             self.chat_log.insert(tk.END, "\n")
             self.last_chat_response = commands # Save for KB
             # Save successful, non-error commands to the database
             if commands and not any("# AI Error:" in cmd for cmd in commands):
                 self._save_commands_to_db(manufacturer, text, commands)
 
-        # Mirror into AI output pane for optional push
+        # Do not mirror into AI push pane; keep Push-to-Device disabled for chat output
         try:
             self.ai_output.delete('1.0', tk.END)
-            self.ai_output.insert(tk.END, "AI Generated Commands:\n")
-            self.ai_output.insert(tk.END, "------------------------\n")
-            self.ai_output.insert(tk.END, "\n".join(commands))
-            self.push_to_device_btn.config(state=tk.NORMAL)
+            self.push_to_device_btn.config(state=tk.DISABLED)
         except Exception:
             pass
         self.chat_log.see(tk.END)
         self.update_status("Chat: commands generated")
 
         self.fix_command_btn.config(state=tk.DISABLED) # Disable after use
+
+    def _send_cli_from_chat(self, cmd):
+        """Send a single command from chat output to the connected device CLI."""
+        try:
+            if not self.connection or not getattr(self, 'is_connected', False):
+                messagebox.showerror("Error", "Not connected to any device.")
+                return
+            if not cmd or cmd.strip().startswith('#'):
+                return
+            self._send_command(cmd.strip())
+        except Exception as e:
+            try:
+                self.log_to_terminal(f"Error sending command: {e}", "error")
+            except Exception:
+                pass
+
+    def sync_chat_commands(self):
+        """Send the last chat response commands to the device in sequence."""
+        if not self.connection or not getattr(self, 'is_connected', False):
+            messagebox.showerror("Error", "Not connected to any device.")
+            return
+
+        commands = getattr(self, 'last_chat_response', None)
+        if not commands:
+            messagebox.showinfo("Info", "No chat commands available to sync.")
+            return
+
+        # Filter out comments and blanks
+        to_send = [c.strip() for c in commands if c and not c.strip().startswith('#')]
+        if not to_send:
+            messagebox.showinfo("Info", "No valid commands to sync.")
+            return
+
+        self.log_to_terminal(f"\n>>> Syncing {len(to_send)} commands from Chat...", "info")
+        self.set_busy(True, f"Syncing {len(to_send)} commands…")
+        self._pause_serial_reader()
+        try:
+            for cmd in to_send:
+                # Reuse existing single-command send behavior
+                self._send_command(cmd)
+                # Brief pause to avoid overruns
+                time.sleep(0.2)
+        except Exception as e:
+            self.log_to_terminal(f"Sync error: {e}", "error")
+        finally:
+            try:
+                self._resume_serial_reader()
+            except Exception:
+                pass
+            self.set_busy(False)
+            self.update_status("Sync complete")
 
     def fetch_running_config(self):
         if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:

@@ -384,7 +384,7 @@ class NetApp(ctk.CTk):
             pass
         self.title("NetIntelli X")
         # Default size aligned with provided screenshot
-        self.geometry("1478x768")
+        self.geometry("1457x768")
         try:
             self.minsize(1200, 700)
         except Exception:
@@ -396,6 +396,12 @@ class NetApp(ctk.CTk):
         self.reader_running = False
         self.profiles = {}
         self.profiles_file = 'profiles.json'
+        # Folder for per-profile snapshots (e.g., CLI DB copies)
+        try:
+            self.profiles_root = os.path.join(os.getcwd(), 'profiles')
+            os.makedirs(self.profiles_root, exist_ok=True)
+        except Exception:
+            self.profiles_root = 'profiles'
         self.ai_provider = AIProvider()
         # Session memory for auto-corrected commands per context
         self.session_cmd_cache = {}
@@ -417,9 +423,22 @@ class NetApp(ctk.CTk):
 
         main_pane = tk.PanedWindow(main_frame, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
         main_pane.pack(fill=tk.BOTH, expand=True)
+        # Freeze main split by hiding sash and set left to ~60% width
+        try:
+            main_pane.configure(sashwidth=0, sashrelief=tk.FLAT)
+            def _place_main_sash():
+                try:
+                    main_pane.sash_place(0, int(main_pane.winfo_width() * 0.60))
+                except Exception:
+                    pass
+            self.after(120, _place_main_sash)
+            main_pane.bind('<Configure>', lambda e: _place_main_sash())
+        except Exception:
+            pass
 
         left_frame = ctk.CTkFrame(main_pane)
-        main_pane.add(left_frame, width=600)
+        # Avoid forcing a fixed width; let the sash control the 60% ratio
+        main_pane.add(left_frame, minsize=300)
 
         conn_frame = ctk.CTkFrame(left_frame)
         conn_frame.pack(pady=6, padx=8, fill="x")
@@ -497,7 +516,13 @@ class NetApp(ctk.CTk):
 
         terminal_frame = ctk.CTkFrame(left_frame)
         terminal_frame.pack(pady=6, padx=8, expand=True, fill="both")
-        ctk.CTkLabel(terminal_frame, text="Device Terminal", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(6,2))
+        # Switch to grid in this frame so the terminal fills all available space
+        try:
+            terminal_frame.grid_rowconfigure(1, weight=1)
+            terminal_frame.grid_columnconfigure(0, weight=1)
+        except Exception:
+            pass
+        ctk.CTkLabel(terminal_frame, text="Device Terminal", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, padx=10, pady=(6,2), sticky="w")
         # Use CustomTkinter textbox for better theming and resizing
         self.terminal = ctk.CTkTextbox(terminal_frame)
         try:
@@ -507,14 +532,24 @@ class NetApp(ctk.CTk):
         except Exception:
             # Still set a default size tracker even if configure fails
             self.terminal_font_size = getattr(self, 'terminal_font_size', 12)
-        self.terminal.pack(expand=True, fill="both")
+        self.terminal.grid(row=1, column=0, sticky="nsew")
+        try:
+            term_scroll = ctk.CTkScrollbar(terminal_frame, command=self.terminal.yview)
+            term_scroll.grid(row=1, column=1, sticky='ns', padx=(6,6))
+            self.terminal.configure(yscrollcommand=term_scroll.set)
+        except Exception:
+            pass
         # Direct input: type into terminal window and press Enter to send
         self._setup_direct_terminal_input()
         self._show_prompt()
 
         # Inline terminal input controls
         term_input_frame = ctk.CTkFrame(terminal_frame)
-        term_input_frame.pack(fill="x", padx=10, pady=6)
+        # Place input row under the terminal textbox (full width)
+        try:
+            term_input_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        except Exception:
+            term_input_frame.pack(side=tk.BOTTOM, fill="x", padx=10, pady=6)
         try:
             # Larger input for typing terminal commands
             self.term_input = ctk.CTkEntry(term_input_frame, height=32)
@@ -544,7 +579,10 @@ class NetApp(ctk.CTk):
 
         # Make Push-to-Device accessible near the terminal as well
         term_actions = ctk.CTkFrame(terminal_frame)
-        term_actions.pack(fill="x", padx=10, pady=6)
+        try:
+            term_actions.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        except Exception:
+            term_actions.pack(fill="x", padx=10, pady=6)
         # Icon button for sending AI commands to device
         self.push_ai_btn = ctk.CTkButton(term_actions, text="📤", width=46, command=self.push_ai_commands)
         self.push_ai_btn.pack(side=tk.LEFT, padx=0)
@@ -560,9 +598,9 @@ class NetApp(ctk.CTk):
         top_right_frame = ctk.CTkFrame(right_master_frame)
         top_right_frame.pack(fill="x", expand=False, pady=4, padx=5)
 
-        # AI Configuration (now on the left of the top-right frame)
-        ai_config_frame = ctk.CTkFrame(top_right_frame)
-        ai_config_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=(0, 5))
+        # AI Configuration (left; compact width)
+        ai_config_frame = ctk.CTkFrame(top_right_frame, width=280)
+        ai_config_frame.pack(side=tk.LEFT, fill="x", expand=False, padx=(0, 5))
         ctk.CTkLabel(ai_config_frame, text="AI Configuration", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, padx=5, pady=(4,2), sticky="w")
         
         ctk.CTkLabel(ai_config_frame, text="Provider:").grid(row=1, column=0, padx=5, pady=3, sticky="w")
@@ -590,9 +628,9 @@ class NetApp(ctk.CTk):
         self.check_api_btn.grid(row=5, column=1, padx=5, pady=3, sticky="ew")
         ai_config_frame.columnconfigure(1, weight=1)
 
-        # Terminal Options (moved from left frame to top-right)
-        terminal_opts_frame = ctk.CTkFrame(top_right_frame)
-        terminal_opts_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=(5, 0))
+        # Terminal Options (center-left; compact width)
+        terminal_opts_frame = ctk.CTkFrame(top_right_frame, width=260)
+        terminal_opts_frame.pack(side=tk.LEFT, fill="x", expand=False, padx=(5, 0))
         ctk.CTkLabel(terminal_opts_frame, text="Terminal Options", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=5, pady=(4,2))
 
         ctk.CTkLabel(terminal_opts_frame, text="Wrap Mode:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
@@ -603,8 +641,20 @@ class NetApp(ctk.CTk):
         except Exception:
             pass
         self.term_wrap_combo.grid(row=1, column=1, sticky="w", padx=5, pady=2)
+        # Hide wrap controls; keep word-wrap as default
+        try:
+            for w in terminal_opts_frame.grid_slaves(row=1, column=0):
+                w.grid_remove()
+            self.term_wrap_combo.grid_remove()
+            # Ensure terminal uses word wrap by default
+            try:
+                self.terminal.configure(wrap='word')
+            except Exception:
+                pass
+        except Exception:
+            pass
 
-        # Compact AI Assistant context next to Terminal Options
+        # AI Assistant (center/right; give it most of top row width)
         ai_assist_top_frame = ctk.CTkFrame(top_right_frame)
         ai_assist_top_frame.pack(side=tk.LEFT, fill="x", expand=True, padx=(5, 0))
         ctk.CTkLabel(ai_assist_top_frame, text="AI Assistant", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=5, pady=(6,4))
@@ -701,6 +751,18 @@ class NetApp(ctk.CTk):
         # Bottom: Side-by-side split for AI Assistant and Chat
         right_split = tk.PanedWindow(right_master_frame, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
         right_split.pack(fill="both", expand=True)
+        # Freeze right split ratio and hide sash
+        try:
+            right_split.configure(sashwidth=0, sashrelief=tk.FLAT)
+            def _place_right_sash():
+                try:
+                    right_split.sash_place(0, int(right_split.winfo_width() * 0.35))
+                except Exception:
+                    pass
+            self.after(150, _place_right_sash)
+            right_split.bind('<Configure>', lambda e: _place_right_sash())
+        except Exception:
+            pass
 
         ai_assistant_frame = ctk.CTkFrame(right_split)
         right_split.add(ai_assistant_frame, minsize=300)
@@ -727,15 +789,30 @@ class NetApp(ctk.CTk):
             self.ai_output.configure(wrap='word', font=("Consolas", 12), height=120)
         except Exception:
             pass
-        self.ai_output.pack(pady=10, padx=10, expand=True, fill="both")
+        self.ai_output.pack(pady=10, padx=10, expand=True, fill="both", side=tk.LEFT)
+        try:
+            ai_scroll = ctk.CTkScrollbar(ai_assistant_frame, command=self.ai_output.yview)
+            ai_scroll.pack(side=tk.RIGHT, fill='y', padx=(0,10))
+            self.ai_output.configure(yscrollcommand=ai_scroll.set)
+        except Exception:
+            pass
 
         # Chat pane: ask questions, get backend answers, and generate commands for changes
         chat_frame = ctk.CTkFrame(right_split)
         right_split.add(chat_frame, minsize=300)
-        ctk.CTkLabel(chat_frame, text="Chat", font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=10, pady=(6,2))
+        # Use grid so the chat log fills the available space with buttons underneath
+        try:
+            chat_frame.grid_rowconfigure(2, weight=1)
+            chat_frame.grid_columnconfigure(0, weight=1)
+        except Exception:
+            pass
+        ctk.CTkLabel(chat_frame, text="Chat", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, padx=10, pady=(6,2), sticky="w")
         # Context fetchers above the chat window
         chat_context_frame = ctk.CTkFrame(chat_frame)
-        chat_context_frame.pack(pady=5, padx=10, fill='x')
+        try:
+            chat_context_frame.grid(row=1, column=0, columnspan=2, sticky='ew', padx=10, pady=5)
+        except Exception:
+            chat_context_frame.pack(pady=5, padx=10, fill='x')
         # Button row for fetching and exporting running config
         button_row = ctk.CTkFrame(chat_context_frame)
         button_row.pack(pady=5, fill="x")
@@ -802,9 +879,19 @@ class NetApp(ctk.CTk):
             self.chat_log.configure(wrap='word', font=("Consolas", 12), height=120)
         except Exception:
             pass
-        self.chat_log.pack(pady=6, padx=10, expand=True, fill="both")
+        self.chat_log.grid(row=2, column=0, sticky="nsew", padx=10, pady=6)
+        try:
+            chat_scroll = ctk.CTkScrollbar(chat_frame, command=self.chat_log.yview)
+            chat_scroll.grid(row=2, column=1, sticky='ns', padx=(0,10))
+            self.chat_log.configure(yscrollcommand=chat_scroll.set)
+        except Exception:
+            pass
         chat_input_frame = ctk.CTkFrame(chat_frame)
-        chat_input_frame.pack(fill="x", padx=10, pady=6)
+        # Place chat input row under the chat log and span full width
+        try:
+            chat_input_frame.grid(row=3, column=0, columnspan=2, sticky='ew', padx=10, pady=6)
+        except Exception:
+            chat_input_frame.pack(side=tk.BOTTOM, fill="x", padx=10, pady=6)
         self.chat_input = ctk.CTkEntry(chat_input_frame, height=32)
         self.chat_input.pack(side=tk.LEFT, fill="x", expand=True)
         self.chat_input.bind("<Return>", self.chat_ask)
@@ -822,8 +909,8 @@ class NetApp(ctk.CTk):
         sync_btn.pack(side=tk.LEFT, padx=6)
         self._add_tooltip(sync_btn, "Send to Device")
 
-        # Favor Chat side for visibility: ~35% AI Assistant, ~65% Chat
-        self.after(100, lambda: right_split.sash_place(0, int(right_split.winfo_width() * 0.35), 0))
+        # Favor AI Assistant more: ~45% AI Assistant, ~55% Chat
+        self.after(100, lambda: right_split.sash_place(0, int(right_split.winfo_width() * 0.45), 0))
 
         # --- Status Bar ---
         self.status_var = tk.StringVar()
@@ -4164,6 +4251,56 @@ class NetApp(ctk.CTk):
             self.profile_combo.set(profile_names[0])
             self.load_selected_profile()
 
+    # --- Profile snapshot helpers ---
+    def _safe_profile_name(self, name: str) -> str:
+        try:
+            name = (name or "").strip()
+            if not name:
+                return ""
+            name = re.sub(r"[<>:\"/\\|?*]", "", name)
+            return name.strip('. ')
+        except Exception:
+            return name or ""
+
+    def _profile_dir(self, profile_name: str) -> str:
+        safe = self._safe_profile_name(profile_name) or profile_name or "profile"
+        return os.path.join(self.profiles_root, safe)
+
+    def _save_db_snapshot(self, profile_dir: str):
+        try:
+            src = 'cli_cache.db'
+            if os.path.exists(src):
+                os.makedirs(profile_dir, exist_ok=True)
+                import shutil
+                shutil.copyfile(src, os.path.join(profile_dir, 'cli_cache.db'))
+        except Exception as e:
+            self.log_to_terminal(f"Failed to snapshot Cmd DB: {e}", "error")
+
+    def _restore_db_snapshot(self, profile_dir: str):
+        try:
+            snap = os.path.join(profile_dir, 'cli_cache.db')
+            if os.path.exists(snap):
+                import shutil
+                try:
+                    if getattr(self, 'db_conn', None):
+                        try:
+                            self.db_conn.close()
+                        except Exception:
+                            pass
+                        self.db_conn = None
+                except Exception:
+                    pass
+                if os.path.exists('cli_cache.db'):
+                    try:
+                        shutil.copyfile('cli_cache.db', 'cli_cache.db.bak')
+                    except Exception:
+                        pass
+                shutil.copyfile(snap, 'cli_cache.db')
+                self._init_db()
+                self.update_status("Restored Cmd DB from profile snapshot")
+        except Exception as e:
+            self.log_to_terminal(f"Failed to restore Cmd DB snapshot: {e}", "error")
+
     def load_selected_profile(self, event=None):
         profile_name = self.profile_combo.get()
         if profile_name in self.profiles:
@@ -4202,10 +4339,59 @@ class NetApp(ctk.CTk):
                 self.available_commands_text.insert(tk.END, profile.get('available_commands', ''))
             except Exception:
                 pass
+            # Restore chat history and AI output
+            try:
+                self.chat_log.delete('1.0', tk.END)
+                self.chat_log.insert(tk.END, profile.get('chat_history', ''))
+            except Exception:
+                pass
+            try:
+                self.ai_output.delete('1.0', tk.END)
+                self.ai_output.insert(tk.END, profile.get('ai_output', ''))
+            except Exception:
+                pass
+            # Restore OTHER config
+            try:
+                self.other_config_text.delete('1.0', tk.END)
+                self.other_config_text.insert(tk.END, profile.get('other_config', ''))
+            except Exception:
+                pass
+            # Restore toggles and AI selections
+            try:
+                self.append_available_to_db_var.set(profile.get('append_available_to_db', self.append_available_to_db_var.get()))
+            except Exception:
+                pass
+            try:
+                self.append_rc_to_chat_var.set(profile.get('append_rc_to_chat', self.append_rc_to_chat_var.get()))
+            except Exception:
+                pass
+            try:
+                self.use_web_search_var.set(profile.get('use_web_search', self.use_web_search_var.get()))
+            except Exception:
+                pass
+            try:
+                self.ai_provider_combo.set(profile.get('ai_provider', self.ai_provider_combo.get()))
+            except Exception:
+                pass
+            try:
+                gm = profile.get('gemini_model', None)
+                if gm:
+                    self.gemini_model_combo.set(gm)
+            except Exception:
+                pass
+            try:
+                om = profile.get('ollama_model', None)
+                if om:
+                    self.ollama_model_combo.set(om)
+            except Exception:
+                pass
+            # Restore command DB snapshot if available
+            self._restore_db_snapshot(self._profile_dir(profile_name))
             self.update_status(f"Loaded profile: {profile_name}")
 
     def save_profile(self):
-        profile_name = simpledialog.askstring("Save Profile", "Enter a name for this profile:")
+        suggested = (self.host_entry.get() or '').strip()
+        profile_name = simpledialog.askstring("Save Profile", "Enter a name for this profile:", initialvalue=suggested)
         if profile_name:
             self.profiles[profile_name] = {
                 'com_port': self.com_port_combo.get(),
@@ -4221,10 +4407,23 @@ class NetApp(ctk.CTk):
                 # New network fields
                 'conn_type': self.conn_type_var.get(),
                 'host': self.host_entry.get(),
-                'port': int(self.port_entry.get() or '0') if (self.port_entry.get() or '').strip().isdigit() else (self.port_entry.get() or '')
+                'port': int(self.port_entry.get() or '0') if (self.port_entry.get() or '').strip().isdigit() else (self.port_entry.get() or ''),
+                # Chat + AI state
+                'chat_history': (self.chat_log.get('1.0', tk.END) if hasattr(self, 'chat_log') else ''),
+                'ai_output': (self.ai_output.get('1.0', tk.END) if hasattr(self, 'ai_output') else ''),
+                'other_config': (self.other_config_text.get('1.0', tk.END) if hasattr(self, 'other_config_text') else ''),
+                'append_available_to_db': (self.append_available_to_db_var.get() if hasattr(self, 'append_available_to_db_var') else True),
+                'append_rc_to_chat': (self.append_rc_to_chat_var.get() if hasattr(self, 'append_rc_to_chat_var') else False),
+                'use_web_search': (self.use_web_search_var.get() if hasattr(self, 'use_web_search_var') else False),
+                'ai_provider': (self.ai_provider_combo.get() if hasattr(self, 'ai_provider_combo') else ''),
+                'gemini_model': (self.gemini_model_combo.get() if hasattr(self, 'gemini_model_combo') else ''),
+                'ollama_model': (self.ollama_model_combo.get() if hasattr(self, 'ollama_model_combo') else ''),
             }
             with open(self.profiles_file, 'w') as f:
                 json.dump(self.profiles, f, indent=4)
+            # Snapshot Cmd DB
+            pdir = self._profile_dir(profile_name)
+            self._save_db_snapshot(pdir)
             self.update_profile_list()
             self.profile_combo.set(profile_name)
             self.update_status(f"Saved profile: {profile_name}")
@@ -4249,10 +4448,21 @@ class NetApp(ctk.CTk):
                 'available_commands': self.available_commands_text.get('1.0', tk.END),
                 'conn_type': self.conn_type_var.get(),
                 'host': self.host_entry.get(),
-                'port': int(self.port_entry.get() or '0') if (self.port_entry.get() or '').strip().isdigit() else (self.port_entry.get() or '')
+                'port': int(self.port_entry.get() or '0') if (self.port_entry.get() or '').strip().isdigit() else (self.port_entry.get() or ''),
+                'chat_history': (self.chat_log.get('1.0', tk.END) if hasattr(self, 'chat_log') else ''),
+                'ai_output': (self.ai_output.get('1.0', tk.END) if hasattr(self, 'ai_output') else ''),
+                'other_config': (self.other_config_text.get('1.0', tk.END) if hasattr(self, 'other_config_text') else ''),
+                'append_available_to_db': (self.append_available_to_db_var.get() if hasattr(self, 'append_available_to_db_var') else True),
+                'append_rc_to_chat': (self.append_rc_to_chat_var.get() if hasattr(self, 'append_rc_to_chat_var') else False),
+                'use_web_search': (self.use_web_search_var.get() if hasattr(self, 'use_web_search_var') else False),
+                'ai_provider': (self.ai_provider_combo.get() if hasattr(self, 'ai_provider_combo') else ''),
+                'gemini_model': (self.gemini_model_combo.get() if hasattr(self, 'gemini_model_combo') else ''),
+                'ollama_model': (self.ollama_model_combo.get() if hasattr(self, 'ollama_model_combo') else ''),
             }
             with open(self.profiles_file, 'w') as f:
                 json.dump(self.profiles, f, indent=4)
+            # Snapshot Cmd DB
+            self._save_db_snapshot(self._profile_dir(profile_name))
             self.update_status(f"Updated profile: {profile_name}")
             messagebox.showinfo("Success", f"Profile '{profile_name}' has been updated.")
 

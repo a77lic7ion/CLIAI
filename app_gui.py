@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import scrolledtext, simpledialog, messagebox, ttk, filedialog
 import customtkinter as ctk
 import json
+import difflib
 import os
 import re
 import requests
@@ -400,6 +401,9 @@ class NetApp(ctk.CTk):
         self.session_cmd_cache = {}
         self.last_manual_command = None
         self.last_chat_response = None
+        # Command history for terminal input
+        self.command_history = []
+        self.history_index = None
         # DB build control
         self.db_build_thread = None
         try:
@@ -428,10 +432,10 @@ class NetApp(ctk.CTk):
         except Exception:
             pass
         # Connection type selector (Serial/SSH/Telnet)
-        ctk.CTkLabel(conn_frame, text="Conn Type:").grid(row=1, column=4, padx=5, pady=3, sticky="w")
+        ctk.CTkLabel(conn_frame, text="Conn Type:").grid(row=1, column=4, padx=(2,0), pady=3, sticky="w")
         self.conn_type_var = tk.StringVar(value="Serial")
         self.conn_type_combo = ctk.CTkComboBox(conn_frame, values=["Serial", "SSH", "Telnet"], width=120)
-        self.conn_type_combo.grid(row=1, column=5, padx=5, pady=3, sticky="w")
+        self.conn_type_combo.grid(row=1, column=5, padx=(0,2), pady=3, sticky="w")
         try:
             self.conn_type_combo.configure(command=self.on_conn_type_change)
         except Exception:
@@ -439,7 +443,10 @@ class NetApp(ctk.CTk):
         ctk.CTkLabel(conn_frame, text="COM Port:").grid(row=2, column=0, padx=5, pady=3, sticky="w")
         self.com_port_combo = ctk.CTkComboBox(conn_frame, state="normal")
         self.com_port_combo.grid(row=2, column=1, padx=5, pady=3, sticky="ew")
-        ctk.CTkButton(conn_frame, text="Refresh", command=self.refresh_com_ports).grid(row=2, column=2, padx=5, pady=3)
+        # Refresh COM ports icon button with tooltip
+        self.refresh_btn = ctk.CTkButton(conn_frame, text="🔄", width=36, command=self.refresh_com_ports)
+        self.refresh_btn.grid(row=2, column=2, padx=5, pady=3)
+        self._add_tooltip(self.refresh_btn, "Refresh COM ports")
         ctk.CTkLabel(conn_frame, text="Baud:").grid(row=2, column=3, padx=5, pady=3, sticky="w")
         self.baud_combo = ctk.CTkComboBox(conn_frame, values=["9600","19200","38400","57600","115200"], width=100)
         self.baud_combo.grid(row=2, column=4, padx=5, pady=3, sticky="w")
@@ -470,15 +477,23 @@ class NetApp(ctk.CTk):
         self.connect_btn = ctk.CTkButton(conn_frame, text="Connect", command=self.toggle_connection)
         self.connect_btn.grid(row=5, column=0, columnspan=2, padx=10, pady=4, sticky="ew")
         # Unified button: Enter privileged/config mode based on manufacturer
-        self.enable_btn = ctk.CTkButton(conn_frame, text="Enter Privileged/Config Mode", command=self.enter_privileged_or_config_mode)
+        # EN button with tooltip for privileged/config mode
+        self.enable_btn = ctk.CTkButton(conn_frame, text="EN", width=46, command=self.enter_privileged_or_config_mode)
         self.enable_btn.grid(row=5, column=2, columnspan=2, padx=10, pady=4, sticky="ew")
+        self._add_tooltip(self.enable_btn, "Enter privileged/config mode")
         conn_frame.columnconfigure(1, weight=1)
 
         profile_btn_frame = ctk.CTkFrame(conn_frame)
         profile_btn_frame.grid(row=1, column=2, columnspan=2, sticky='ew')
-        ctk.CTkButton(profile_btn_frame, text="Save", command=self.save_profile).pack(side=tk.LEFT, fill='x', expand=True)
-        ctk.CTkButton(profile_btn_frame, text="Update", command=self.update_profile).pack(side=tk.LEFT, fill='x', expand=True)
-        ctk.CTkButton(profile_btn_frame, text="Delete", command=self.delete_profile).pack(side=tk.LEFT, fill='x', expand=True)
+        self.save_btn = ctk.CTkButton(profile_btn_frame, text="💾", width=46, command=self.save_profile)
+        self.save_btn.pack(side=tk.LEFT, fill='x', expand=True)
+        self._add_tooltip(self.save_btn, "Save profile")
+        self.update_btn = ctk.CTkButton(profile_btn_frame, text="✎", width=46, command=self.update_profile)
+        self.update_btn.pack(side=tk.LEFT, fill='x', expand=True)
+        self._add_tooltip(self.update_btn, "Update profile")
+        self.delete_btn = ctk.CTkButton(profile_btn_frame, text="🗑️", width=46, command=self.delete_profile)
+        self.delete_btn.pack(side=tk.LEFT, fill='x', expand=True)
+        self._add_tooltip(self.delete_btn, "Delete profile")
 
         terminal_frame = ctk.CTkFrame(left_frame)
         terminal_frame.pack(pady=6, padx=8, expand=True, fill="both")
@@ -501,17 +516,24 @@ class NetApp(ctk.CTk):
         term_input_frame = ctk.CTkFrame(terminal_frame)
         term_input_frame.pack(fill="x", padx=10, pady=6)
         try:
-            self.term_input = ctk.CTkEntry(term_input_frame)
+            # Larger input for typing terminal commands
+            self.term_input = ctk.CTkEntry(term_input_frame, height=32)
             self.term_input.pack(side=tk.LEFT, fill="x", expand=True)
             # Allow pressing Return to send the typed command from the input field
             try:
                 self.term_input.bind("<Return>", self.send_terminal_input)
                 # Bind Ctrl+C to send interrupt (ETX)
                 self.term_input.bind("<Control-c>", self._on_ctrl_c)
+                # Bind Up arrow to cycle back through command history
+                self.term_input.bind("<Up>", self._history_prev)
             except Exception:
                 pass
-            ctk.CTkButton(term_input_frame, text="Send", command=self.send_terminal_input).pack(side=tk.LEFT, padx=6)
-            ctk.CTkButton(term_input_frame, text="Send RETURN", command=self.send_enter_key).pack(side=tk.LEFT, padx=6)
+            # Up Arrow button to recall last commands
+            ctk.CTkButton(term_input_frame, text="↑", width=46, command=self._history_prev).pack(side=tk.LEFT, padx=6)
+            # Combine Send/Send RETURN into a single RETURN icon button
+            self.return_btn = ctk.CTkButton(term_input_frame, text="⏎", width=46, command=self.send_enter_key)
+            self.return_btn.pack(side=tk.LEFT, padx=6)
+            self._add_tooltip(self.return_btn, "RETURN")
             # New help button: sends a space then '?' and presses return
             ctk.CTkButton(term_input_frame, text="?", command=self.send_space_then_question).pack(side=tk.LEFT, padx=6)
             # Ctrl+C button to interrupt long-running device output/commands
@@ -523,7 +545,11 @@ class NetApp(ctk.CTk):
         # Make Push-to-Device accessible near the terminal as well
         term_actions = ctk.CTkFrame(terminal_frame)
         term_actions.pack(fill="x", padx=10, pady=6)
-        ctk.CTkButton(term_actions, text="Push AI Commands to Device", command=self.push_ai_commands).pack(side=tk.LEFT, fill="x", expand=True)
+        # Icon button for sending AI commands to device
+        self.push_ai_btn = ctk.CTkButton(term_actions, text="📤", width=46, command=self.push_ai_commands)
+        self.push_ai_btn.pack(side=tk.LEFT, padx=0)
+        self._add_tooltip(self.push_ai_btn, "Send to Device")
+        # Keep Save Config as a labeled button
         ctk.CTkButton(term_actions, text="Save Config", command=self.save_device_config).pack(side=tk.LEFT, padx=6)
 
         # --- Right-hand side layout --- 
@@ -585,8 +611,9 @@ class NetApp(ctk.CTk):
         context_frame = ctk.CTkFrame(ai_assist_top_frame)
         context_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=6, sticky="nsew")
         try:
+            # Only allow the value column to expand; keep others natural size
             for c in range(0, 4):
-                context_frame.grid_columnconfigure(c, weight=1, uniform="buttons")
+                context_frame.grid_columnconfigure(c, weight=(1 if c == 1 else 0))
         except Exception:
             pass
         ctk.CTkLabel(context_frame, text="Manufacturer:").grid(row=0, column=0, sticky="w")
@@ -598,6 +625,17 @@ class NetApp(ctk.CTk):
         ctk.CTkLabel(context_frame, text="Device Type:").grid(row=1, column=0, sticky="w")
         self.type_entry = ctk.CTkEntry(context_frame)
         self.type_entry.grid(row=1, column=1, sticky="ew", padx=2)
+        # Hide Device Type from UI but keep the widget for internal usage
+        try:
+            # Find the last-added label by querying grid slaves in row 1
+            for w in context_frame.grid_slaves(row=1, column=0):
+                w.grid_remove()
+        except Exception:
+            pass
+        try:
+            self.type_entry.grid_remove()
+        except Exception:
+            pass
         ctk.CTkLabel(context_frame, text="Model:").grid(row=2, column=0, sticky="w")
         self.model_entry = ctk.CTkEntry(context_frame)
         self.model_entry.grid(row=2, column=1, sticky="ew", padx=2)
@@ -606,14 +644,21 @@ class NetApp(ctk.CTk):
         self.ver_entry.grid(row=3, column=1, sticky="ew", padx=2)
 
         # Shortened button texts to fit
-        self.fetch_info_btn = ctk.CTkButton(context_frame, text="Fetch Info", command=self.fetch_device_info)
-        self.fetch_info_btn.grid(row=4, column=0, pady=5, sticky="ew")
-        self.build_db_btn = ctk.CTkButton(context_frame, text="Build DB", command=self.build_command_database)
-        self.build_db_btn.grid(row=4, column=1, pady=5, sticky="ew")
-        self.view_kb_btn = ctk.CTkButton(context_frame, text="View KB", command=self.show_knowledge_base_window)
-        self.view_kb_btn.grid(row=4, column=2, pady=5, sticky="ew")
-        self.import_json_btn = ctk.CTkButton(context_frame, text="Import CLI", command=self.import_cli_json)
-        self.import_json_btn.grid(row=4, column=3, pady=5, sticky="ew")
+        # Icon actions: pack into a single compact row for better spacing
+        actions_row = ctk.CTkFrame(context_frame)
+        actions_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=4)
+        self.fetch_info_btn = ctk.CTkButton(actions_row, text="🔎", width=40, command=self.fetch_device_info)
+        self.fetch_info_btn.pack(side=tk.LEFT, padx=4)
+        self._add_tooltip(self.fetch_info_btn, "Fetch Info")
+        self.build_db_btn = ctk.CTkButton(actions_row, text="🛠️", width=40, command=self.build_command_database)
+        self.build_db_btn.pack(side=tk.LEFT, padx=4)
+        self._add_tooltip(self.build_db_btn, "Build DB")
+        self.view_kb_btn = ctk.CTkButton(actions_row, text="📚", width=40, command=self.show_knowledge_base_window)
+        self.view_kb_btn.pack(side=tk.LEFT, padx=4)
+        self._add_tooltip(self.view_kb_btn, "View KB")
+        self.import_json_btn = ctk.CTkButton(actions_row, text="📥", width=40, command=self.import_cli_json)
+        self.import_json_btn.pack(side=tk.LEFT, padx=4)
+        self._add_tooltip(self.import_json_btn, "Import CLI")
         context_frame.columnconfigure(1, weight=1)
         context_frame.columnconfigure(2, weight=1)
         font_frame = ctk.CTkFrame(terminal_opts_frame)
@@ -624,14 +669,26 @@ class NetApp(ctk.CTk):
         ctk.CTkButton(font_frame, text="-", width=36, command=self.decrease_terminal_font).pack(side=tk.LEFT, padx=2)
         self.auto_pager_var = tk.BooleanVar(value=True)
         # Stack Terminal Options buttons vertically for compact layout
+        # Keep fix_command_btn for references but hide it (compact layout)
         self.fix_command_btn = ctk.CTkButton(terminal_opts_frame, text="Fix with AI", command=self.ai_fix_last_command, state=tk.DISABLED)
-        self.fix_command_btn.grid(row=3, column=0, sticky="ew", padx=5, pady=4)
-        ctk.CTkButton(terminal_opts_frame, text="Clear", command=self.clear_terminal).grid(row=4, column=0, sticky="ew", padx=5, pady=4)
-        ctk.CTkButton(terminal_opts_frame, text="Export…", command=self.export_terminal_chat).grid(row=5, column=0, sticky="ew", padx=5, pady=4)
-        ctk.CTkCheckBox(terminal_opts_frame, text="Auto-pager", variable=self.auto_pager_var).grid(row=6, column=0, sticky="w", padx=5, pady=2)
-        ctk.CTkButton(terminal_opts_frame, text="Next Page", command=self.send_pager_next).grid(row=7, column=0, sticky="w", padx=5, pady=2)
-        ctk.CTkButton(terminal_opts_frame, text="Stop Paging", command=self.send_pager_stop).grid(row=8, column=0, sticky="w", padx=5, pady=2)
-        ctk.CTkButton(terminal_opts_frame, text="Disable Paging", command=self.disable_paging).grid(row=9, column=0, sticky="w", padx=5, pady=2)
+        try:
+            self.fix_command_btn.grid_remove()
+        except Exception:
+            pass
+        clear_btn = ctk.CTkButton(terminal_opts_frame, text="🧹", command=self.clear_terminal)
+        clear_btn.grid(row=3, column=0, sticky="ew", padx=5, pady=3)
+        self._add_tooltip(clear_btn, "Clear Terminal")
+        export_btn = ctk.CTkButton(terminal_opts_frame, text="⤴", command=self.export_terminal_chat)
+        export_btn.grid(row=4, column=0, sticky="ew", padx=5, pady=3)
+        self._add_tooltip(export_btn, "Export…")
+        ctk.CTkCheckBox(terminal_opts_frame, text="Auto-pager", variable=self.auto_pager_var).grid(row=5, column=0, sticky="w", padx=5, pady=2)
+        next_btn = ctk.CTkButton(terminal_opts_frame, text="⏭", command=self.send_pager_next)
+        next_btn.grid(row=6, column=0, sticky="w", padx=5, pady=2)
+        self._add_tooltip(next_btn, "Next Page")
+        stop_btn = ctk.CTkButton(terminal_opts_frame, text="⏹", command=self.send_pager_stop)
+        stop_btn.grid(row=7, column=0, sticky="w", padx=5, pady=2)
+        self._add_tooltip(stop_btn, "Stop Paging")
+        # Remove Disable Paging (redundant with Auto-pager)
 
         # Apply requested defaults and initialize provider
         try:
@@ -663,6 +720,7 @@ class NetApp(ctk.CTk):
         self.web_search_check = ctk.CTkCheckBox(ai_assistant_frame, text="Use Web Search (Gemini)", variable=self.use_web_search_var)
         self.web_search_check.pack(pady=5, padx=10, anchor="w")
         ctk.CTkButton(ai_assistant_frame, text="Generate Commands", command=self.query_ai).pack(pady=5, padx=10, fill="x")
+        ctk.CTkButton(ai_assistant_frame, text="Compare with Other Device (AI)", command=self.compare_configs_ai).pack(pady=5, padx=10, fill="x")
         # Reduce AI output pane height to favor Chat context visibility
         self.ai_output = ctk.CTkTextbox(ai_assistant_frame)
         try:
@@ -681,18 +739,51 @@ class NetApp(ctk.CTk):
         # Button row for fetching and exporting running config
         button_row = ctk.CTkFrame(chat_context_frame)
         button_row.pack(pady=5, fill="x")
-        self.fetch_config_btn = ctk.CTkButton(button_row, text="Fetch Running Config for AI Context", command=self.fetch_running_config)
+        self.fetch_config_btn = ctk.CTkButton(button_row, text="Fetch Config", command=self.fetch_running_config)
         self.fetch_config_btn.pack(side=tk.LEFT, fill="x", expand=True)
-        self.export_config_btn = ctk.CTkButton(button_row, text="Export to TXT", command=self.export_running_config_to_txt)
+        self.export_config_btn = ctk.CTkButton(button_row, text="⤴", width=46, command=self.export_running_config_to_txt)
         self.export_config_btn.pack(side=tk.LEFT, padx=6)
+        self._add_tooltip(self.export_config_btn, "Export to TXT")
+        # New: Import running config from a local TXT file (stores for context)
+        self.import_config_btn = ctk.CTkButton(button_row, text="📥", width=46, command=self.import_running_config_from_txt)
+        self.import_config_btn.pack(side=tk.LEFT, padx=6)
+        self._add_tooltip(self.import_config_btn, "Import Running Config (TXT)")
+        # Eye icon to preview CURRENT config on demand
+        try:
+            self.view_current_btn = ctk.CTkButton(button_row, text="👁", width=46, command=self.show_current_config_modal)
+            self.view_current_btn.pack(side=tk.LEFT)
+        except Exception:
+            pass
         # Larger running-config viewer for better visibility
         self.running_config_text = ctk.CTkTextbox(chat_context_frame)
         try:
             self.running_config_text.configure(wrap='word', font=("Consolas", 12), height=180)
         except Exception:
             pass
-        self.running_config_text.pack(pady=5, expand=True, fill="both")
-        self.fetch_q_btn = ctk.CTkButton(chat_context_frame, text="Fetch '?' Commands for AI Context", command=self.fetch_available_commands)
+        # Do not show inline preview; keep as hidden storage only
+        # Upload and view OTHER device configuration for AI comparison
+        other_row = ctk.CTkFrame(chat_context_frame)
+        other_row.pack(pady=5, fill="x")
+        self.upload_other_btn = ctk.CTkButton(other_row, text="Upload Other Device Config (TXT)", command=self.upload_other_config)
+        self.upload_other_btn.pack(side=tk.LEFT, fill="x", expand=True)
+        self.clear_other_btn = ctk.CTkButton(other_row, text="Clear", command=self.clear_other_config)
+        self.clear_other_btn.pack(side=tk.LEFT, padx=6)
+        # Other Device Config controls (no inline preview)
+        ctk.CTkLabel(chat_context_frame, text="Other Device Config:")
+        self.other_config_text = ctk.CTkTextbox(chat_context_frame)
+        try:
+            self.other_config_text.configure(wrap='word', font=("Consolas", 12), height=140)
+        except Exception:
+            pass
+        # Eye icon to preview OTHER config
+        try:
+            eye_row = ctk.CTkFrame(chat_context_frame)
+            eye_row.pack(pady=(0,2), fill='x')
+            self.view_other_btn = ctk.CTkButton(eye_row, text="👁 Other", width=100, command=self.show_other_config_modal)
+            self.view_other_btn.pack(side=tk.LEFT)
+        except Exception:
+            pass
+        self.fetch_q_btn = ctk.CTkButton(chat_context_frame, text="Fetch ?", command=self.fetch_available_commands)
         self.fetch_q_btn.pack(pady=5, fill="x")
         # Option to append fetched '?' output to the CLI command DB
         self.append_available_to_db_var = tk.BooleanVar(value=True)
@@ -703,7 +794,7 @@ class NetApp(ctk.CTk):
             self.available_commands_text.configure(wrap='word', font=("Consolas", 12), height=150)
         except Exception:
             pass
-        self.available_commands_text.pack(pady=5, expand=True, fill="both")
+        # Hide '?' inline preview; keep widget for storage
 
         # Halve the chat agent window height by giving room to context panes
         self.chat_log = ctk.CTkTextbox(chat_frame)
@@ -714,16 +805,22 @@ class NetApp(ctk.CTk):
         self.chat_log.pack(pady=6, padx=10, expand=True, fill="both")
         chat_input_frame = ctk.CTkFrame(chat_frame)
         chat_input_frame.pack(fill="x", padx=10, pady=6)
-        self.chat_input = ctk.CTkEntry(chat_input_frame)
+        self.chat_input = ctk.CTkEntry(chat_input_frame, height=32)
         self.chat_input.pack(side=tk.LEFT, fill="x", expand=True)
         self.chat_input.bind("<Return>", self.chat_ask)
-        ctk.CTkButton(chat_input_frame, text="Send", command=self.chat_ask).pack(side=tk.LEFT, padx=6)
+        send_btn = ctk.CTkButton(chat_input_frame, text="⏎", width=46, command=self.chat_ask)
+        send_btn.pack(side=tk.LEFT, padx=6)
+        self._add_tooltip(send_btn, "Send")
         # Option to append running config to chat queries for exact-device context
         self.append_rc_to_chat_var = tk.BooleanVar(value=False)
         ctk.CTkCheckBox(chat_input_frame, text="Append Running Config", variable=self.append_rc_to_chat_var).pack(side=tk.LEFT, padx=6)
-        ctk.CTkButton(chat_input_frame, text="Save to KB", command=self.save_chat_to_knowledge).pack(side=tk.LEFT, padx=6)
+        save_kb_btn = ctk.CTkButton(chat_input_frame, text="💾", width=46, command=self.save_chat_to_knowledge)
+        save_kb_btn.pack(side=tk.LEFT, padx=6)
+        self._add_tooltip(save_kb_btn, "Save to KB")
         # Sync commands directly from the last chat response to the connected device
-        ctk.CTkButton(chat_input_frame, text="Sync Commands", command=self.sync_chat_commands).pack(side=tk.LEFT, padx=6)
+        sync_btn = ctk.CTkButton(chat_input_frame, text="📤", width=46, command=self.sync_chat_commands)
+        sync_btn.pack(side=tk.LEFT, padx=6)
+        self._add_tooltip(sync_btn, "Send to Device")
 
         # Favor Chat side for visibility: ~35% AI Assistant, ~65% Chat
         self.after(100, lambda: right_split.sash_place(0, int(right_split.winfo_width() * 0.35), 0))
@@ -754,6 +851,43 @@ class NetApp(ctk.CTk):
         self.on_ai_provider_change()
         self.update_status("Ready")
         self._init_db()
+
+    def _add_tooltip(self, widget, text: str):
+        """Attach a simple tooltip to a widget (appears on hover)."""
+        try:
+            tip = None
+
+            def show_tip(event=None):
+                nonlocal tip
+                try:
+                    if tip or not widget.winfo_viewable():
+                        return
+                    x = widget.winfo_rootx() + 20
+                    y = widget.winfo_rooty() + widget.winfo_height() + 10
+                    tip = tk.Toplevel(widget)
+                    tip.wm_overrideredirect(True)
+                    tip.wm_geometry(f"+{x}+{y}")
+                    lbl = tk.Label(tip, text=text, background="#333333", foreground="#ffffff", relief=tk.SOLID, borderwidth=1, padx=6, pady=3)
+                    lbl.pack()
+                except Exception:
+                    tip = None
+
+            def hide_tip(event=None):
+                nonlocal tip
+                try:
+                    if tip:
+                        tip.destroy()
+                        tip = None
+                except Exception:
+                    tip = None
+
+            try:
+                widget.bind("<Enter>", show_tip)
+                widget.bind("<Leave>", hide_tip)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _init_db(self):
         """Initialize the SQLite database to cache AI-generated commands."""
@@ -2643,6 +2777,14 @@ class NetApp(ctk.CTk):
         if not self.connection or not getattr(self, "is_connected", False):
             messagebox.showerror("Error", "Not connected to any device")
             return
+        # Track command history when sending a non-empty command
+        try:
+            if cmd and cmd.strip():
+                self.command_history.append(cmd.strip())
+                # Reset index so next Up starts from the latest
+                self.history_index = None
+        except Exception:
+            pass
         try:
             # Echo command right at the end so it’s visible near the prompt
             self._echo_command(cmd)
@@ -2666,6 +2808,29 @@ class NetApp(ctk.CTk):
             self.terminal.see(tk.END)
         except Exception:
             pass
+
+    # --- Command history navigation ---
+    def _history_prev(self, event=None):
+        try:
+            hist = getattr(self, 'command_history', [])
+            if not hist:
+                return "break" if event else None
+            if self.history_index is None:
+                self.history_index = len(hist) - 1
+            else:
+                if self.history_index > 0:
+                    self.history_index -= 1
+            cmd = hist[self.history_index]
+            if hasattr(self, 'term_input') and self.term_input:
+                self.term_input.delete(0, tk.END)
+                self.term_input.insert(0, cmd)
+                try:
+                    self.term_input.icursor(tk.END)
+                except Exception:
+                    pass
+            return "break" if event else None
+        except Exception:
+            return "break" if event else None
 
     def _get_ai_correction(self, failed_cmd, error_msg):
         """Gets a command correction using a multi-step process: local DB, AI, then guidance."""
@@ -2845,8 +3010,8 @@ class NetApp(ctk.CTk):
             self.model_entry.get(),
             self.ver_entry.get(),
             device_type=self.type_entry.get(),
-            running_config=self.running_config_text.get('1.0', tk.END),
-            available_commands=self.available_commands_text.get('1.0', tk.END),
+            running_config=(getattr(self, 'running_config_cache', '') or self.running_config_text.get('1.0', tk.END)),
+            available_commands=(getattr(self, 'available_commands_cache', '') or self.available_commands_text.get('1.0', tk.END)),
             use_web_search=self.use_web_search_var.get(),
             ollama_model=self.ollama_model_combo.get(),
             gemini_model=self.get_selected_gemini_model_full()
@@ -2871,7 +3036,7 @@ class NetApp(ctk.CTk):
         # If requested, append current running config to the query for exact-device context
         try:
             if getattr(self, 'append_rc_to_chat_var', None) and self.append_rc_to_chat_var.get():
-                rc_text = (self.running_config_text.get('1.0', tk.END) if hasattr(self, 'running_config_text') else '').strip()
+                rc_text = (getattr(self, 'running_config_cache', '') or (self.running_config_text.get('1.0', tk.END) if hasattr(self, 'running_config_text') else '')).strip()
                 if rc_text:
                     # Limit size to keep prompt manageable
                     rc_text = rc_text[:50000]
@@ -2929,7 +3094,7 @@ class NetApp(ctk.CTk):
         # Helper: get available commands from editor or DB fallback
         def _get_available_commands_context_for_ai():
             try:
-                text = self.available_commands_text.get('1.0', tk.END).strip()
+                text = (getattr(self, 'available_commands_cache', '') or self.available_commands_text.get('1.0', tk.END)).strip()
             except Exception:
                 text = ''
             if text:
@@ -2955,7 +3120,7 @@ class NetApp(ctk.CTk):
             self.model_entry.get(),
             self.ver_entry.get(),
             device_type=self.type_entry.get(),
-            running_config=self.running_config_text.get('1.0', tk.END),
+            running_config=(getattr(self, 'running_config_cache', '') or self.running_config_text.get('1.0', tk.END)),
             available_commands=_get_available_commands_context_for_ai(),
             use_web_search=self.use_web_search_var.get(),
             ollama_model=self.ollama_model_combo.get(),
@@ -3225,6 +3390,8 @@ class NetApp(ctk.CTk):
             config = self.run_device_command(cmd, timeout=30)
             self.running_config_text.delete('1.0', tk.END)
             self.running_config_text.insert(tk.END, config)
+            # Cache for hidden preview and AI context usage
+            self.running_config_cache = config
             self.update_status("Running config fetched successfully.")
             self.log_to_terminal("Running config fetched and added to AI context.", "info")
         except Exception as e:
@@ -3247,6 +3414,8 @@ class NetApp(ctk.CTk):
             commands_output = self.run_device_command('?', timeout=20)
             self.available_commands_text.delete('1.0', tk.END)
             self.available_commands_text.insert(tk.END, commands_output)
+            # Cache for hidden preview and AI context usage
+            self.available_commands_cache = commands_output
             self.update_status("Available commands fetched.")
             self.log_to_terminal("Available commands fetched and added to AI context.", "info")
 
@@ -3352,6 +3521,225 @@ class NetApp(ctk.CTk):
             except Exception:
                 pass
             self.log_to_terminal(f"Export failed: {e}", "error")
+
+    def import_running_config_from_txt(self):
+        """Import CURRENT running config from a local .txt file and store it."""
+        try:
+            path = filedialog.askopenfilename(
+                title="Select Running Config",
+                filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")]
+            )
+            if not path:
+                return
+            with open(path, 'r', encoding='utf-8') as f:
+                text = f.read()
+            try:
+                self.running_config_text.delete('1.0', tk.END)
+                self.running_config_text.insert(tk.END, text)
+            except Exception:
+                pass
+            # Cache for hidden preview and AI context usage
+            self.running_config_cache = text
+            self.update_status(f"Imported running config: {os.path.basename(path)}")
+            self.log_to_terminal(f"Running config imported from: {path}", "info")
+        except Exception as e:
+            try:
+                messagebox.showerror("Import Error", f"Failed to import: {e}")
+            except Exception:
+                pass
+            self.log_to_terminal(f"Import running config failed: {e}", "error")
+
+    def show_current_config_modal(self):
+        """Open a pop-up viewer to display CURRENT running config."""
+        try:
+            text = (getattr(self, 'running_config_cache', '') or self.running_config_text.get('1.0', tk.END)).strip()
+        except Exception:
+            text = ''
+        if not text:
+            try:
+                messagebox.showinfo("View", "Running config is empty. Fetch or import first.")
+            except Exception:
+                pass
+            return
+        try:
+            win = ctk.CTkToplevel(self)
+        except Exception:
+            win = tk.Toplevel(self)
+        try:
+            win.title("Current Running Config")
+        except Exception:
+            pass
+        viewer = ctk.CTkTextbox(win) if hasattr(ctk, 'CTkTextbox') else tk.Text(win)
+        try:
+            viewer.configure(wrap='word', font=("Consolas", 12))
+        except Exception:
+            pass
+        viewer.pack(expand=True, fill='both', padx=10, pady=10)
+        try:
+            viewer.insert(tk.END, text)
+        except Exception:
+            pass
+        controls = ctk.CTkFrame(win) if hasattr(ctk, 'CTkFrame') else tk.Frame(win)
+        controls.pack(fill='x', padx=10, pady=(0,10))
+        try:
+            ctk.CTkButton(controls, text="Export to TXT", command=self.export_running_config_to_txt).pack(side=tk.LEFT)
+            ctk.CTkButton(controls, text="Close", command=win.destroy).pack(side=tk.RIGHT)
+        except Exception:
+            tk.Button(controls, text="Close", command=win.destroy).pack(side=tk.RIGHT)
+
+    def show_other_config_modal(self):
+        """Open a pop-up viewer to display OTHER device config."""
+        try:
+            text = self.other_config_text.get('1.0', tk.END).strip()
+        except Exception:
+            text = ''
+        if not text:
+            try:
+                messagebox.showinfo("View", "Other device config is empty. Upload first.")
+            except Exception:
+                pass
+            return
+        try:
+            win = ctk.CTkToplevel(self)
+        except Exception:
+            win = tk.Toplevel(self)
+        try:
+            win.title("Other Device Config")
+        except Exception:
+            pass
+        viewer = ctk.CTkTextbox(win) if hasattr(ctk, 'CTkTextbox') else tk.Text(win)
+        try:
+            viewer.configure(wrap='word', font=("Consolas", 12))
+        except Exception:
+            pass
+        viewer.pack(expand=True, fill='both', padx=10, pady=10)
+        try:
+            viewer.insert(tk.END, text)
+        except Exception:
+            pass
+        controls = ctk.CTkFrame(win) if hasattr(ctk, 'CTkFrame') else tk.Frame(win)
+        controls.pack(fill='x', padx=10, pady=(0,10))
+        try:
+            ctk.CTkButton(controls, text="Close", command=win.destroy).pack(side=tk.RIGHT)
+        except Exception:
+            tk.Button(controls, text="Close", command=win.destroy).pack(side=tk.RIGHT)
+
+    def upload_other_config(self):
+        """Load OTHER device configuration from a text file into the comparison pane."""
+        try:
+            path = filedialog.askopenfilename(
+                title="Select Other Device Config",
+                filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")]
+            )
+            if not path:
+                return
+            with open(path, 'r', encoding='utf-8') as f:
+                text = f.read()
+            try:
+                self.other_config_text.delete('1.0', tk.END)
+                self.other_config_text.insert(tk.END, text)
+            except Exception:
+                pass
+            self.update_status(f"Loaded other config: {os.path.basename(path)}")
+            self.log_to_terminal(f"Other device config loaded from: {path}", "info")
+        except Exception as e:
+            try:
+                messagebox.showerror("Load Error", f"Failed to load other config: {e}")
+            except Exception:
+                pass
+            self.log_to_terminal(f"Load other config failed: {e}", "error")
+
+    def clear_other_config(self):
+        """Clear the OTHER device configuration pane."""
+        try:
+            self.other_config_text.delete('1.0', tk.END)
+        except Exception:
+            pass
+        self.update_status("Other config cleared")
+
+    def compare_configs_ai(self):
+        """Compare CURRENT vs OTHER device configs and generate AI-driven fixes for the CURRENT device."""
+        try:
+            current_cfg = (self.running_config_text.get('1.0', tk.END) if hasattr(self, 'running_config_text') else '').strip()
+        except Exception:
+            current_cfg = ''
+        try:
+            other_cfg = (self.other_config_text.get('1.0', tk.END) if hasattr(self, 'other_config_text') else '').strip()
+        except Exception:
+            other_cfg = ''
+
+        if not current_cfg:
+            messagebox.showerror("Input Error", "Fetch the CURRENT device running config first.")
+            return
+        if not other_cfg:
+            messagebox.showerror("Input Error", "Upload the OTHER device config to compare.")
+            return
+
+        manufacturer = (self.man_entry.get() or '').strip()
+        if not manufacturer:
+            messagebox.showerror("Input Error", "Manufacturer field is required for AI compare.")
+            return
+
+        # Quick diff to aid diagnosis
+        diff_lines = list(difflib.unified_diff(
+            current_cfg.splitlines(), other_cfg.splitlines(),
+            fromfile='CURRENT', tofile='OTHER', lineterm=''
+        ))
+        diff_text = "\n".join(diff_lines)
+
+        # Build an explicit compare request, include OTHER config inside the user request
+        compare_request = (
+            "Two devices cannot see each other or have connectivity issues. "
+            "Compare the CURRENT device config (provided in AI context) with the OTHER device config below. "
+            "Diagnose likely root causes (VLANs, interface state, IP addressing, trunks vs access, routing, ACLs, STP, LLDP/CDP, port-channels). "
+            "Then generate CLI-ready commands to fix the CURRENT device. "
+            "Return only CLI commands, one per line, suitable to apply now.\n\n"
+            "OTHER_DEVICE_CONFIG_BEGIN\n" + other_cfg[:60000] + "\nOTHER_DEVICE_CONFIG_END"
+        )
+
+        # Write header and diff preview
+        try:
+            self.ai_output.delete('1.0', tk.END)
+            self.ai_output.insert(tk.END, "> Compare: CURRENT vs OTHER config\n\n")
+            if diff_text:
+                self.ai_output.insert(tk.END, "Quick Diff (CURRENT vs OTHER):\n")
+                # Limit extremely large diffs
+                self.ai_output.insert(tk.END, (diff_text[:20000] + ("\n...\n" if len(diff_text) > 20000 else "")) + "\n\n")
+        except Exception:
+            pass
+
+        # Generate fix commands via AI
+        self.set_busy(True, "Comparing configs and generating fixes…")
+        try:
+            commands = self.ai_provider.get_commands(
+                compare_request,
+                manufacturer,
+                self.model_entry.get(),
+                self.ver_entry.get(),
+                device_type=self.type_entry.get(),
+                running_config=current_cfg,
+                available_commands=self.available_commands_text.get('1.0', tk.END),
+                use_web_search=self.use_web_search_var.get(),
+                ollama_model=self.ollama_model_combo.get(),
+                gemini_model=self.get_selected_gemini_model_full(),
+                prompt_style='default'
+            )
+        finally:
+            self.set_busy(False)
+
+        try:
+            self.ai_output.insert(tk.END, "AI Fix Commands:\n")
+            self.ai_output.insert(tk.END, "------------------------\n")
+            self.ai_output.insert(tk.END, "\n".join(commands))
+        except Exception:
+            pass
+
+        # Save successful, non-error commands
+        if commands and not any("# AI Error:" in cmd for cmd in commands):
+            try:
+                self._save_commands_to_db(manufacturer, "AI Compare (CURRENT vs OTHER)", commands)
+            except Exception:
+                pass
 
     def fetch_device_info(self):
         if not self.connection or not hasattr(self, 'is_connected') or not self.is_connected:

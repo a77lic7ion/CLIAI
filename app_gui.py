@@ -13,6 +13,7 @@ import threading
 import queue
 import sqlite3
 import shutil
+import sys
 try:
     import telnetlib
 except Exception:
@@ -51,15 +52,32 @@ try:
     import graphviz as graphviz_lib
 except ImportError:
     graphviz_lib = None
+# Image and SVG rendering (optional)
 try:
     from PIL import Image, ImageTk
+    import io
+    try:
+        import cairosvg
+    except ImportError:
+        cairosvg = None
 except ImportError:
     Image = None
     ImageTk = None
+    io = None
+    cairosvg = None
 try:
     from ttp import ttp
 except ImportError:
     ttp = None
+
+# --- Packaging helpers ---
+def resource_path(rel_path: str) -> str:
+    """Resolve path to resources for both source and PyInstaller builds."""
+    try:
+        base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    except Exception:
+        base = os.getcwd()
+    return os.path.join(base, rel_path)
 
 # --- Netmiko device_type mapping ---
 MANUFACTURER_TO_DEVICE_TYPE = {
@@ -89,6 +107,37 @@ class TelnetAdapter:
                 self._buf += chunk
         except Exception:
             pass
+
+    def _load_logo_ctk_image(self, size=(200, 50)):
+        """Load the NetIntelliX SVG as a CTkImage, falling back to None."""
+        try:
+            svg_path = resource_path('netintellix_logo.svg')
+        except Exception:
+            svg_path = 'netintellix_logo.svg'
+        try:
+            if cairosvg and Image and os.path.exists(svg_path):
+                with open(svg_path, 'rb') as f:
+                    svg_bytes = f.read()
+                png_bytes = cairosvg.svg2png(bytestring=svg_bytes, output_width=size[0], output_height=size[1])
+                img = Image.open(io.BytesIO(png_bytes))
+                return ctk.CTkImage(light_image=img, dark_image=img, size=size)
+        except Exception:
+            pass
+        return None
+
+    def _create_header_with_logo(self):
+        """Create a persistent header containing the brand logo, visible across all tabs."""
+        header = ctk.CTkFrame(self)
+        header.pack(fill=tk.X)
+        logo_img = self._load_logo_ctk_image(size=(220, 56))
+        if logo_img:
+            logo_label = ctk.CTkLabel(header, image=logo_img, text="")
+            logo_label.image = logo_img
+            logo_label.pack(side=tk.LEFT, padx=10, pady=6)
+        else:
+            ctk.CTkLabel(header, text="NetIntelliX", font=("Segoe UI", 18, "bold")).pack(side=tk.LEFT, padx=10, pady=6)
+        # Right-side filler to keep header height consistent
+        ctk.CTkLabel(header, text="").pack(side=tk.LEFT, padx=4)
 
     @property
     def in_waiting(self):
@@ -398,7 +447,7 @@ class NetApp(ctk.CTk):
             ctk.set_default_color_theme("blue")
         except Exception:
             pass
-        self.title("NetIntelli X")
+        self.title("Netstellix")
         # Default size aligned with provided screenshot
         self.geometry("1457x768")
         try:
@@ -414,12 +463,10 @@ class NetApp(ctk.CTk):
         self.profiles_file = 'profiles.json'
         # Sites inventory
         self.sites = []
-        # Use an absolute path anchored to this script to avoid CWD issues
+        # Resolve sites.json via resource path for packaging safety
         try:
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            self.sites_file = os.path.join(script_dir, 'sites.json')
+            self.sites_file = resource_path('sites.json')
         except Exception:
-            # Fallback to current working directory
             self.sites_file = 'sites.json'
         self.selected_site_id = None
         # Folder for per-profile snapshots (e.g., CLI DB copies)
@@ -448,20 +495,37 @@ class NetApp(ctk.CTk):
         except Exception:
             self.stop_db_build_event = None
 
-        # --- Main Notebook (Tabbed UI) ---
-        nb = ttk.Notebook(self)
+        # --- App Header (Persistent across tabs) ---
         try:
-            # Use dark custom style for the notebook for better contrast
-            nb.configure(style="Dark.TNotebook")
+            self._create_header_with_logo()
+        except Exception:
+            # Fallback minimal header if logo fails
+            hdr = ctk.CTkFrame(self)
+            ctk.CTkLabel(hdr, text="NetIntelliX", font=("Segoe UI", 16, "bold")).pack(side=tk.LEFT, padx=10, pady=6)
+            hdr.pack(fill=tk.X)
+
+        # --- Main Tabs (Rounded, Material-like) ---
+        tabview = ctk.CTkTabview(self)
+        try:
+            tabview.configure(corner_radius=12)
         except Exception:
             pass
-        nb.pack(fill=tk.BOTH, expand=True)
-        # Tabs
-        sites_tab = ctk.CTkFrame(nb)
-        term_assist_tab = ctk.CTkFrame(nb)
-        parsed_tab = ctk.CTkFrame(nb)
-        topology_tab = ctk.CTkFrame(nb)
-        settings_tab = ctk.CTkFrame(nb)
+        tabview.pack(fill=tk.BOTH, expand=True)
+        # Create tabs
+        try:
+            tabview.add("Sites & Devices")
+            tabview.add("Terminal")
+            tabview.add("Parsed Config")
+            tabview.add("Topology")
+            tabview.add("Settings")
+        except Exception:
+            pass
+        # Retrieve tab frames
+        sites_tab = tabview.tab("Sites & Devices")
+        term_assist_tab = tabview.tab("Terminal")
+        parsed_tab = tabview.tab("Parsed Config")
+        topology_tab = tabview.tab("Topology")
+        settings_tab = tabview.tab("Settings")
         # Keep references to tabs for potential rebuilds
         self.sites_tab = sites_tab
         self.term_assist_tab = term_assist_tab
@@ -470,11 +534,6 @@ class NetApp(ctk.CTk):
         self.settings_tab = settings_tab
         # Track if Sites tab has been built to avoid duplicates
         self.sites_tab_built = False
-        nb.add(sites_tab, text="Sites & Devices")
-        nb.add(term_assist_tab, text="Terminal")
-        nb.add(parsed_tab, text="Parsed Config")
-        nb.add(topology_tab, text="Topology")
-        nb.add(settings_tab, text="Settings")
 
         # --- Main Content Frame (Terminal & Assistant) ---
         main_frame = ctk.CTkFrame(term_assist_tab)
@@ -482,16 +541,16 @@ class NetApp(ctk.CTk):
 
         main_pane = tk.PanedWindow(main_frame, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
         main_pane.pack(fill=tk.BOTH, expand=True)
-        # Freeze main split by hiding sash and set left to ~60% width
+        # Enable user-resizable split; set an initial ~60% ratio
         try:
-            main_pane.configure(sashwidth=0, sashrelief=tk.FLAT)
-            def _place_main_sash():
+            main_pane.configure(sashwidth=8, sashrelief=tk.RAISED)
+            def _place_main_sash_once():
                 try:
                     main_pane.sash_place(0, int(main_pane.winfo_width() * 0.60))
                 except Exception:
                     pass
-            self.after(120, _place_main_sash)
-            main_pane.bind('<Configure>', lambda e: _place_main_sash())
+            # Set initial position only; user can adjust afterward
+            self.after(120, _place_main_sash_once)
         except Exception:
             pass
 
@@ -555,10 +614,18 @@ class NetApp(ctk.CTk):
         self.port_entry.grid(row=4, column=5, padx=5, pady=3, sticky="w")
 
         self.connect_btn = ctk.CTkButton(conn_frame, text="Connect", command=self.toggle_connection)
+        try:
+            self.connect_btn.configure(fg_color="#2F80ED", hover_color="#1B5FCC")
+        except Exception:
+            pass
         self.connect_btn.grid(row=5, column=0, columnspan=2, padx=10, pady=4, sticky="ew")
         # Unified button: Enter privileged/config mode based on manufacturer
         # EN button with tooltip for privileged/config mode
         self.enable_btn = ctk.CTkButton(conn_frame, text="EN", width=46, command=self.enter_privileged_or_config_mode)
+        try:
+            self.enable_btn.configure(fg_color="#3A3F47", hover_color="#2E333A")
+        except Exception:
+            pass
         self.enable_btn.grid(row=5, column=2, columnspan=2, padx=10, pady=4, sticky="ew")
         self._add_tooltip(self.enable_btn, "Enter privileged/config mode")
         conn_frame.columnconfigure(1, weight=1)
@@ -656,6 +723,18 @@ class NetApp(ctk.CTk):
         self._add_tooltip(self.push_ai_btn, "Send to Device")
         # Keep Save Config as a labeled button
         ctk.CTkButton(term_actions, text="Save Config", command=self.save_device_config).pack(side=tk.LEFT, padx=6)
+        # Add Ctrl+C interrupt near Save/quit controls
+        try:
+            ctk.CTkButton(term_actions, text="Ctrl+C", command=self.send_ctrl_c).pack(side=tk.LEFT, padx=6)
+        except Exception:
+            pass
+        # Add Quit button with red accent
+        try:
+            quit_btn = ctk.CTkButton(term_actions, text="Quit", command=self.quit)
+            quit_btn.configure(fg_color="#B54040", hover_color="#9C2E2E")
+            quit_btn.pack(side=tk.LEFT, padx=6)
+        except Exception:
+            pass
 
         # --- Right-hand side layout --- 
         right_master_frame = ctk.CTkFrame(main_pane)
@@ -737,16 +816,15 @@ class NetApp(ctk.CTk):
         # Bottom: Side-by-side split for AI Assistant and Chat
         right_split = tk.PanedWindow(right_master_frame, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
         right_split.pack(fill="both", expand=True)
-        # Freeze right split ratio and hide sash
+        # Enable user-resizable split; set an initial ~35% ratio
         try:
-            right_split.configure(sashwidth=0, sashrelief=tk.FLAT)
-            def _place_right_sash():
+            right_split.configure(sashwidth=8, sashrelief=tk.RAISED)
+            def _place_right_sash_once():
                 try:
                     right_split.sash_place(0, int(right_split.winfo_width() * 0.35))
                 except Exception:
                     pass
-            self.after(150, _place_right_sash)
-            right_split.bind('<Configure>', lambda e: _place_right_sash())
+            self.after(150, _place_right_sash_once)
         except Exception:
             pass
 
@@ -761,7 +839,12 @@ class NetApp(ctk.CTk):
         # (Moved context panes to Chat window above)
         ttk.Separator(ai_assistant_frame, orient='horizontal').pack(fill='x', pady=5, padx=10)
         ctk.CTkLabel(ai_assistant_frame, text="Your Request:").pack(pady=5, padx=10, anchor="w")
-        self.ai_input = ctk.CTkEntry(ai_assistant_frame)
+        # Use a multiline textbox for requests to match the design
+        self.ai_input = ctk.CTkTextbox(ai_assistant_frame)
+        try:
+            self.ai_input.configure(wrap='word', font=("Consolas", 12), height=140)
+        except Exception:
+            pass
         self.ai_input.pack(pady=5, padx=10, fill="x")
         self.ai_input.bind("<Return>", self.query_ai)
         self.use_web_search_var = tk.BooleanVar(value=True)
@@ -792,7 +875,12 @@ class NetApp(ctk.CTk):
             chat_frame.grid_columnconfigure(0, weight=1)
         except Exception:
             pass
-        ctk.CTkLabel(chat_frame, text="Chat", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, padx=10, pady=(6,2), sticky="w")
+        ctk.CTkLabel(chat_frame, text="Chat", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, padx=10, pady=(6,2), sticky="w")
+        try:
+            clear_chat_btn = ctk.CTkButton(chat_frame, text="Clear", width=60, command=self.clear_chat_log)
+            clear_chat_btn.grid(row=0, column=1, padx=10, pady=(6,2), sticky="e")
+        except Exception:
+            pass
         # Context fetchers above the chat window
         chat_context_frame = ctk.CTkFrame(chat_frame)
         try:
@@ -1262,10 +1350,10 @@ class NetApp(ctk.CTk):
                     device_map_name = {}
                     device_map_ip = {}
                     icon_map = {
-                        'switch': os.path.join('icons', 'switch.png'),
-                        'router': os.path.join('icons', 'router.png'),
-                        'firewall': os.path.join('icons', 'firewall.png'),
-                        'default': os.path.join('icons', 'ethernet.png'),
+                        'switch': resource_path(os.path.join('icons', 'switch.png')),
+                        'router': resource_path(os.path.join('icons', 'router.png')),
+                        'firewall': resource_path(os.path.join('icons', 'firewall.png')),
+                        'default': resource_path(os.path.join('icons', 'ethernet.png')),
                     }
                     for d in site.get('devices', []):
                         nid = d.get('id') or d.get('label') or d.get('mgmt_ip') or f"node_{len(nodes)+1}"
@@ -3696,6 +3784,13 @@ class NetApp(ctk.CTk):
         except Exception:
             pass
 
+    def clear_chat_log(self):
+        try:
+            if hasattr(self, 'chat_log') and self.chat_log:
+                self.chat_log.delete('1.0', tk.END)
+        except Exception:
+            pass
+
     def run_device_command(self, cmd, timeout=4):
         """Send a command to the connected device and capture its response."""
         if not self.connection or not getattr(self, 'is_connected', False):
@@ -4828,7 +4923,11 @@ class NetApp(ctk.CTk):
             self.set_busy(False)
 
     def query_ai(self, event=None):
-        user_request = self.ai_input.get()
+        # Support CTkTextbox input
+        try:
+            user_request = self.ai_input.get('1.0', tk.END).strip()
+        except Exception:
+            user_request = self.ai_input.get()
         if not user_request: return
         
         manufacturer = self.man_entry.get()

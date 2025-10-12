@@ -1,1 +1,81 @@
-[]
+[
+  {
+    "id": "dhl",
+    "name": "080",
+    "devices": [
+      {
+        "id": "ZAJTPNCSO01",
+        "label": "ZAJTPNCSO01",
+        "mgmt_ip": "165.72.12.88",
+        "platform": "Cisco",
+        "site_id": "dhl",
+        "config_path": "C:/Users/Shaun/OneDrive/Desktop/Work/DHL 080/Configs/ZAJTPNCSO01.txt"
+      },
+      {
+        "id": "ZAJTPNCSO02",
+        "label": "ZAJTPNCSO02",
+        "mgmt_ip": "2.255.6.120",
+        "platform": "Cisco",
+        "site_id": "dhl",
+        "config_path": "C:/Users/Shaun/OneDrive/Desktop/Work/DHL 080/Configs/ZAJTPNCSO02.txt"
+      },
+      {
+        "id": "ZAJTPNCSO03",
+        "label": "ZAJTPNCSO03",
+        "mgmt_ip": "2.27.149.19",
+        "platform": "Cisco",
+        "site_id": "dhl",
+        "config_path": "C:/Users/Shaun/OneDrive/Desktop/Work/DHL 080/Configs/ZAJTPNCSO03.txt"
+      },
+      {
+        "id": "ZAJTPNCSO04",
+        "label": "ZAJTPNCSO04",
+        "mgmt_ip": "165.72.12.88",
+        "platform": "Cisco",
+        "site_id": "dhl",
+        "config_path": "C:/Users/Shaun/OneDrive/Desktop/Work/DHL 080/Configs/ZAJTPNCSO04.txt"
+      },
+      {
+        "id": "ZAJTPNCSO05",
+        "label": "ZAJTPNCSO05",
+        "mgmt_ip": "2.255.6.120",
+        "platform": "Cisco",
+        "site_id": "dhl",
+        "config_path": "C:/Users/Shaun/OneDrive/Desktop/Work/DHL 080/Configs/ZAJTPNCSO05.txt"
+      },
+      {
+        "id": "ZAJTPNCSO06",
+        "label": "ZAJTPNCSO06",
+        "mgmt_ip": "165.72.12.88",
+        "platform": "Cisco",
+        "site_id": "dhl",
+        "config_path": "C:/Users/Shaun/OneDrive/Desktop/Work/DHL 080/Configs/ZAJTPNCSO06.txt"
+      },
+      {
+        "id": "ZAJTPNCSO07",
+        "label": "ZAJTPNCSO07",
+        "mgmt_ip": "165.72.12.88",
+        "platform": "Cisco",
+        "site_id": "dhl",
+        "config_path": "C:/Users/Shaun/OneDrive/Desktop/Work/DHL 080/Configs/ZAJTPNCSO07.txt"
+      }
+    ],
+    "configs": []
+  },
+  {
+    "id": "alex",
+    "name": "AF",
+    "devices": [
+      {
+        "id": "WLC-PRIMARY",
+        "label": "WLC-PRIMARY",
+        "mgmt_ip": "8.8.8.8",
+        "platform": "Huawei",
+        "site_id": "alex",
+        "config_path": "C:/Users/Shaun/OneDrive/Desktop/AFTikkun/WLC-PRIMARY.txt"
+      }
+    ],
+    "configs": [],
+    "manufacturer": "huawei"
+  }
+]

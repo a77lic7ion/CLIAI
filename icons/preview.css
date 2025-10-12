@@ -1,0 +1,6 @@
+body { background:#121212; color:#e6e6e6; font-family:Segoe UI, Helvetica, Arial; }
+.grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:16px; padding:20px; }
+.card { background:#1f1f1f; border:1px solid #2c2c2c; border-radius:8px; padding:12px; text-align:center; }
+img { width:96px; height:96px; image-rendering:auto; }
+.name { margin-top:8px; font-size:14px; color:#cfcfcf; }
+h1 { padding-left:20px; }

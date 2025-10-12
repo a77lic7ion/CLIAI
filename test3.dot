@@ -1,0 +1,6 @@
+digraph G {
+  graph [rankdir=LR];
+  a [image="d:/GitHub/CLIAI/icons/router.png", shape=none, xlabel="Router-1"];
+  b [image="d:/GitHub/CLIAI/icons/switch.png", shape=none, xlabel="Switch-1"];
+  a -> b [label="Gi0/1 — Gi0/2"];
+}

@@ -1,0 +1,17 @@
+digraph G {
+  graph [rankdir=LR, imagepath="icons"];
+  node [shape=plaintext];
+  a [label=<
+   <table border="0" cellborder="0" cellspacing="0">
+     <tr><td><img src="router.png"/></td></tr>
+     <tr><td>Router-1</td></tr>
+   </table>
+  >];
+  b [label=<
+   <table border="0" cellborder="0" cellspacing="0">
+     <tr><td><img src="switch.png"/></td></tr>
+     <tr><td>Switch-1</td></tr>
+   </table>
+  >];
+  a -> b [label="Gi0/1 — Gi0/2"];
+}

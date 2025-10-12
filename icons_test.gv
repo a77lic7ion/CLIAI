@@ -1,0 +1,1 @@
+digraph G { graph [bgcolor=white]; node [shape=none]; a [label=<<TABLE BORDER='0' CELLBORDER='0' CELLPADDING='2'><TR><TD><IMG SRC='icons/router.svg' SCALE='true'/></TD></TR><TR><TD><FONT FACE='Helvetica'>Router1</FONT></TD></TR></TABLE>>]; }

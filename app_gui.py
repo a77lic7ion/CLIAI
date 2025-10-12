@@ -414,7 +414,13 @@ class NetApp(ctk.CTk):
         self.profiles_file = 'profiles.json'
         # Sites inventory
         self.sites = []
-        self.sites_file = 'sites.json'
+        # Use an absolute path anchored to this script to avoid CWD issues
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            self.sites_file = os.path.join(script_dir, 'sites.json')
+        except Exception:
+            # Fallback to current working directory
+            self.sites_file = 'sites.json'
         self.selected_site_id = None
         # Folder for per-profile snapshots (e.g., CLI DB copies)
         try:
@@ -456,6 +462,14 @@ class NetApp(ctk.CTk):
         parsed_tab = ctk.CTkFrame(nb)
         topology_tab = ctk.CTkFrame(nb)
         settings_tab = ctk.CTkFrame(nb)
+        # Keep references to tabs for potential rebuilds
+        self.sites_tab = sites_tab
+        self.term_assist_tab = term_assist_tab
+        self.parsed_tab = parsed_tab
+        self.topology_tab = topology_tab
+        self.settings_tab = settings_tab
+        # Track if Sites tab has been built to avoid duplicates
+        self.sites_tab_built = False
         nb.add(sites_tab, text="Sites & Devices")
         nb.add(term_assist_tab, text="Terminal")
         nb.add(parsed_tab, text="Parsed Config")
@@ -549,8 +563,14 @@ class NetApp(ctk.CTk):
         self._add_tooltip(self.enable_btn, "Enter privileged/config mode")
         conn_frame.columnconfigure(1, weight=1)
 
+        # Place profile action buttons in a dedicated column to avoid overlapping the profile combobox
         profile_btn_frame = ctk.CTkFrame(conn_frame)
-        profile_btn_frame.grid(row=1, column=2, columnspan=2, sticky='ew')
+        profile_btn_frame.grid(row=1, column=3, sticky='w')
+        try:
+            conn_frame.grid_columnconfigure(1, weight=1)  # allow profile combobox to expand
+            conn_frame.grid_columnconfigure(3, minsize=140)  # ensure button group has room
+        except Exception:
+            pass
         self.save_btn = ctk.CTkButton(profile_btn_frame, text="💾", width=46, command=self.save_profile)
         self.save_btn.pack(side=tk.LEFT, fill='x', expand=True)
         self._add_tooltip(self.save_btn, "Save profile")
@@ -661,7 +681,7 @@ class NetApp(ctk.CTk):
             pass
         ctk.CTkLabel(context_frame, text="Manufacturer:").grid(row=0, column=0, sticky="w")
         # Use only a dropdown for manufacturer; remove free-text entry
-        self.man_combo = ctk.CTkComboBox(context_frame, values=["Cisco", "H3C", "Huawei", "Juniper", "Other"], command=self._on_manufacturer_combo_changed)
+        self.man_combo = ctk.CTkComboBox(context_frame, values=["Cisco", "H3C", "Huawei", "Juniper", "Arista", "Other"], command=self._on_manufacturer_combo_changed)
         self.man_combo.grid(row=0, column=1, sticky="ew", padx=2)
         # For compatibility, point man_entry to combo (get() works similarly)
         self.man_entry = self.man_combo
@@ -917,8 +937,8 @@ class NetApp(ctk.CTk):
         # Build Sites & Devices after loading
         try:
             self._build_sites_tab(sites_tab)
-        except Exception:
-            self.log_to_terminal("Failed to init Sites & Devices tab.", "error")
+        except Exception as e:
+            self.log_to_terminal(f"Failed to init Sites & Devices tab: {e}", "error")
 
         # --- Additional Tabs: Parsed Config & Topology ---
         try:
@@ -1055,15 +1075,16 @@ class NetApp(ctk.CTk):
                 bordercolor=palette["panel"],
             )
             # Dark Treeview style for readability
+            # Use ttk style naming convention: "StyleName.WidgetClass"
             style.configure(
-                "DarkTreeview",
+                "Dark.Treeview",
                 background=palette["bg"],
                 foreground=palette["text"],
                 fieldbackground=palette["bg"],
                 bordercolor=palette["panel"],
             )
-            style.map("DarkTreeview", background=[("selected", "#334e68")], foreground=[("selected", "#ffffff")])
-            style.configure("DarkTreeview.Heading", background=palette["panel"], foreground=palette["text"]) 
+            style.map("Dark.Treeview", background=[("selected", "#334e68")], foreground=[("selected", "#ffffff")])
+            style.configure("Dark.Treeview.Heading", background=palette["panel"], foreground=palette["text"]) 
         except Exception:
             pass
 
@@ -1149,21 +1170,79 @@ class NetApp(ctk.CTk):
         toolbar = ctk.CTkFrame(container)
         toolbar.pack(fill="x", padx=8, pady=(6,4))
         ctk.CTkLabel(toolbar, text="Topology", font=("Helvetica", 12, "bold")).pack(side=tk.LEFT)
+        # Site selector for topology generation
+        try:
+            site_ids = [str(s.get('id')) for s in getattr(self, 'sites', []) or []]
+        except Exception:
+            site_ids = []
+        self.topology_site_combo = ctk.CTkComboBox(toolbar, values=(site_ids or ["None"]))
+        try:
+            self.topology_site_combo.set(self.selected_site_id or (site_ids[0] if site_ids else "None"))
+        except Exception:
+            pass
+        try:
+            self.topology_site_combo.configure(command=self.on_topology_site_change)
+        except Exception:
+            pass
+        self.topology_site_combo.pack(side=tk.LEFT, padx=6)
         ctk.CTkButton(toolbar, text="Generate", command=self.generate_topology_layout).pack(side=tk.LEFT, padx=6)
         ctk.CTkButton(toolbar, text="Save", command=self.save_topology_layout).pack(side=tk.LEFT, padx=6)
         ctk.CTkButton(toolbar, text="Clear", command=self.clear_topology_layout).pack(side=tk.LEFT, padx=6)
-        # Dark canvas background for readability
-        self.topology_canvas = tk.Canvas(container, bg="#121212")
+        # Canvas controls: Fit, Zoom, Grid Snap/Show
+        try:
+            ctk.CTkButton(toolbar, text="Fit", width=60, command=lambda: self._fit_topology_to_view()).pack(side=tk.LEFT, padx=6)
+            ctk.CTkButton(toolbar, text="Zoom +", width=60, command=lambda: self._scale_topology(1.2)).pack(side=tk.LEFT, padx=4)
+            ctk.CTkButton(toolbar, text="Zoom −", width=60, command=lambda: self._scale_topology(0.83)).pack(side=tk.LEFT, padx=4)
+            self.grid_snap_var = tk.BooleanVar(value=True)
+            self.show_grid_var = tk.BooleanVar(value=True)
+            self.grid_size = 40
+            ctk.CTkCheckBox(toolbar, text="Grid Snap", variable=self.grid_snap_var, command=self._draw_grid).pack(side=tk.LEFT, padx=6)
+            ctk.CTkCheckBox(toolbar, text="Show Grid", variable=self.show_grid_var, command=self._draw_grid).pack(side=tk.LEFT, padx=6)
+        except Exception:
+            pass
+        # Canvas background (set to white per request)
+        self.topology_canvas = tk.Canvas(container, bg="#ffffff")
         self.topology_canvas.pack(fill="both", expand=True, padx=8, pady=6)
         # Interaction bindings
         self.topology_canvas.bind('<ButtonPress-1>', self._topology_on_press)
         self.topology_canvas.bind('<B1-Motion>', self._topology_on_drag)
         self.topology_canvas.bind('<ButtonRelease-1>', self._topology_on_release)
         self.topology_canvas.bind('<Double-Button-1>', self._topology_on_double_click)
+        self.topology_canvas.bind('<Configure>', self._on_topology_canvas_configure)
         # State
         self.topo_nodes = {}
         self.topo_edges = []
         self._drag_state = {"node": None, "dx": 0, "dy": 0, "resizing": False}
+
+    def on_topology_site_change(self, choice):
+        # Update selected site and regenerate topology for the chosen site
+        try:
+            self.selected_site_id = (choice or '').strip() or None
+        except Exception:
+            pass
+        try:
+            # Keep Sites list selection in sync if possible
+            if self.selected_site_id:
+                self._select_site_row_by_id(self.selected_site_id)
+        except Exception:
+            pass
+        try:
+            self.generate_topology_layout()
+        except Exception:
+            pass
+
+    def _refresh_topology_site_combo(self):
+        try:
+            if hasattr(self, 'topology_site_combo') and self.topology_site_combo is not None:
+                site_ids = [str(s.get('id')) for s in getattr(self, 'sites', []) or []]
+                self.topology_site_combo.configure(values=(site_ids or ["None"]))
+                try:
+                    current = self.selected_site_id or (site_ids[0] if site_ids else "None")
+                    self.topology_site_combo.set(current)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def generate_topology_layout(self):
         # Generate from selected site devices, deriving connections from saved configs
@@ -1172,57 +1251,100 @@ class NetApp(ctk.CTk):
         try:
             site = next((s for s in self.sites if s.get('id') == self.selected_site_id), None)
             if site:
-                device_map_name = {}
-                device_map_ip = {}
-                for d in site.get('devices', []):
-                    nid = d.get('id') or d.get('label') or d.get('mgmt_ip') or f"node_{len(nodes)+1}"
-                    disp_label = d.get('label') or nid
-                    ip = d.get('mgmt_ip') or ''
-                    label = disp_label if not ip else f"{disp_label}\n{ip}"
-                    nodes.append({"id": nid, "label": label})
-                    if disp_label:
-                        device_map_name[disp_label.strip()] = nid
-                    if ip:
-                        device_map_ip[ip.strip()] = nid
-                # Parse edges by reading attached configs
-                for d in site.get('devices', []):
-                    nid = d.get('id') or d.get('label') or d.get('mgmt_ip')
-                    cfg_path = d.get('config_path')
-                    if cfg_path and os.path.exists(cfg_path):
-                        try:
-                            with open(cfg_path, 'r', errors='ignore') as f:
-                                txt = f.read()
-                            neigh = self._parse_neighbors_from_config(txt)
-                            # Match by name
-                            for nm in neigh.get('names', []):
-                                tgt = device_map_name.get(nm.strip())
-                                if tgt and tgt != nid:
-                                    edges.append((nid, tgt))
-                            # Match by IP
-                            for nip in neigh.get('ips', []):
-                                tgt = device_map_ip.get(nip.strip())
-                                if tgt and tgt != nid:
-                                    edges.append((nid, tgt))
-                        except Exception:
-                            pass
+                # Try AI-driven inference first if provider configured
+                try:
+                    ai_nodes, ai_edges = self._ai_infer_topology_from_configs(site)
+                except Exception:
+                    ai_nodes, ai_edges = ([], [])
+                if ai_nodes and ai_edges:
+                    nodes, edges = ai_nodes, ai_edges
+                else:
+                    device_map_name = {}
+                    device_map_ip = {}
+                    icon_map = {
+                        'switch': os.path.join('icons', 'switch.png'),
+                        'router': os.path.join('icons', 'router.png'),
+                        'firewall': os.path.join('icons', 'firewall.png'),
+                        'default': os.path.join('icons', 'ethernet.png'),
+                    }
+                    for d in site.get('devices', []):
+                        nid = d.get('id') or d.get('label') or d.get('mgmt_ip') or f"node_{len(nodes)+1}"
+                        disp_label = d.get('label') or nid
+                        ip = d.get('mgmt_ip') or ''
+                        dtype = (d.get('type') or '').lower()
+                        # pick icon based on type
+                        img = icon_map['default']
+                        if 'switch' in dtype:
+                            img = icon_map['switch']
+                        elif 'router' in dtype:
+                            img = icon_map['router']
+                        elif 'firewall' in dtype or 'fw' in dtype:
+                            img = icon_map['firewall']
+                        label = disp_label if not ip else f"{disp_label}\n{ip}"
+                        nodes.append({"id": nid, "label": label, "image": img})
+                        if disp_label:
+                            device_map_name[disp_label.strip()] = nid
+                        if ip:
+                            device_map_ip[ip.strip()] = nid
+                    # Parse edges by reading attached configs
+                    for d in site.get('devices', []):
+                        nid = d.get('id') or d.get('label') or d.get('mgmt_ip')
+                        cfg_path = d.get('config_path')
+                        if cfg_path and os.path.exists(cfg_path):
+                            try:
+                                with open(cfg_path, 'r', errors='ignore') as f:
+                                    txt = f.read()
+                                neigh = self._parse_neighbors_from_config(txt)
+                                # Link objects with ports if available
+                                for link in neigh.get('links', []) or []:
+                                    tgt = device_map_name.get((link.get('neighbor_name') or '').strip()) or device_map_ip.get((link.get('neighbor_ip') or '').strip())
+                                    if tgt and tgt != nid:
+                                        lbl = ''
+                                        lp = (link.get('local_port') or '').strip()
+                                        rp = (link.get('remote_port') or '').strip()
+                                        if lp and rp:
+                                            lbl = f"{lp} ↔ {rp}"
+                                        elif lp:
+                                            lbl = lp
+                                        elif rp:
+                                            lbl = rp
+                                        edges.append({"tail": nid, "head": tgt, "label": lbl})
+                                # Fallback: simple name/ip matches
+                                if not neigh.get('links'):
+                                    for nm in neigh.get('names', []) or []:
+                                        tgt = device_map_name.get(nm.strip())
+                                        if tgt and tgt != nid:
+                                            edges.append({"tail": nid, "head": tgt, "label": ''})
+                                    for nip in neigh.get('ips', []) or []:
+                                        tgt = device_map_ip.get(nip.strip())
+                                        if tgt and tgt != nid:
+                                            edges.append({"tail": nid, "head": tgt, "label": ''})
+                            except Exception:
+                                pass
             else:
                 nodes = [
                     {"id": "A", "label": self.host_entry.get() or "DeviceA"},
                     {"id": "B", "label": "DeviceB"},
                     {"id": "C", "label": "DeviceC"},
                 ]
-                edges = [("A", "B"), ("B", "C")]
+                edges = ([{"tail": "A", "head": "B", "label": ''}, {"tail": "B", "head": "C", "label": ''}])
         except Exception:
             pass
-        # Deduplicate edges
+        # Deduplicate edges by endpoints
         try:
             uniq = set()
             dedup = []
-            for a,b in edges:
-                key = (a,b)
-                if key not in uniq:
-                    uniq.add(key)
-                    dedup.append((a,b))
+            for e in edges:
+                if isinstance(e, (list, tuple)) and len(e) >= 2:
+                    key = (e[0], e[1])
+                    if key not in uniq:
+                        uniq.add(key)
+                        dedup.append({"tail": e[0], "head": e[1], "label": (e[2] if len(e) > 2 else '')})
+                else:
+                    key = (e.get('tail'), e.get('head'))
+                    if key not in uniq:
+                        uniq.add(key)
+                        dedup.append({"tail": e.get('tail'), "head": e.get('head'), "label": e.get('label') or ''})
             edges = dedup
         except Exception:
             pass
@@ -1231,23 +1353,162 @@ class NetApp(ctk.CTk):
     def _parse_neighbors_from_config(self, cfg_text: str):
         names = set()
         ips = set()
+        links = []
+        text = cfg_text or ''
         try:
-            # Cisco CDP
-            for m in re.finditer(r"Device ID\s*:\s*([^\r\n]+)", cfg_text, flags=re.IGNORECASE):
-                names.add(m.group(1).strip())
-            for m in re.finditer(r"IP (?:address|Address)\s*[: ]\s*((?:\d{1,3}\.){3}\d{1,3})", cfg_text, flags=re.IGNORECASE):
-                ips.add(m.group(1).strip())
-            # LLDP common
-            for m in re.finditer(r"System Name\s*[: ]\s*([^\r\n]+)", cfg_text, flags=re.IGNORECASE):
-                names.add(m.group(1).strip())
-            for m in re.finditer(r"Management Address\s*[: ]\s*((?:\d{1,3}\.){3}\d{1,3})", cfg_text, flags=re.IGNORECASE):
-                ips.add(m.group(1).strip())
-            # H3C/Huawei style
-            for m in re.finditer(r"neighbor system name\s*[: ]\s*([^\r\n]+)", cfg_text, flags=re.IGNORECASE):
-                names.add(m.group(1).strip())
+            # Split into neighbor blocks based on common headers
+            blocks = []
+            for m in re.finditer(r"(?i)(Device ID\s*:\s*[^\n]+|System Name\s*:\s*[^\n]+|neighbor system name\s*[: ]\s*[^\n]+)(?:.*?)(?:\n\s*\n|$)", text, flags=re.DOTALL):
+                blocks.append(m.group(0))
+            if not blocks:
+                blocks = [text]
+            for b in blocks:
+                neighbor_name = ''
+                neighbor_ip = ''
+                local_port = ''
+                remote_port = ''
+                mm = re.search(r"(?i)Device ID\s*:\s*([^\r\n]+)", b)
+                if mm:
+                    neighbor_name = mm.group(1).strip()
+                mm = re.search(r"(?i)System Name\s*[: ]\s*([^\r\n]+)", b)
+                if mm and not neighbor_name:
+                    neighbor_name = mm.group(1).strip()
+                mm = re.search(r"(?i)neighbor system name\s*[: ]\s*([^\r\n]+)", b)
+                if mm and not neighbor_name:
+                    neighbor_name = mm.group(1).strip()
+                mm = re.search(r"(?i)IP\s+(?:address|Address)\s*[: ]\s*((?:\d{1,3}\.){3}\d{1,3})", b)
+                if mm:
+                    neighbor_ip = mm.group(1).strip()
+                # Ports
+                mm = re.search(r"(?i)Local\s+(?:Interface|Port(?:\s+id)?)\s*[: ]\s*([\w/.-]+)", b)
+                if mm:
+                    local_port = mm.group(1).strip()
+                mm = re.search(r"(?i)Interface\s*[: ]\s*([\w/.-]+)", b)
+                if mm and not local_port:
+                    local_port = mm.group(1).strip()
+                mm = re.search(r"(?i)Port ID(?:\s*\(outgoing port\))?\s*[: ]\s*([\w/.-]+)", b)
+                if mm:
+                    remote_port = mm.group(1).strip()
+                mm = re.search(r"(?i)Neighbor\s+Port\s+ID\s*[: ]\s*([\w/.-]+)", b)
+                if mm and not remote_port:
+                    remote_port = mm.group(1).strip()
+                if neighbor_name:
+                    names.add(neighbor_name)
+                if neighbor_ip:
+                    ips.add(neighbor_ip)
+                if neighbor_name or neighbor_ip:
+                    links.append({
+                        "neighbor_name": neighbor_name,
+                        "neighbor_ip": neighbor_ip,
+                        "local_port": local_port,
+                        "remote_port": remote_port,
+                    })
         except Exception:
             pass
-        return {"names": list(names), "ips": list(ips)}
+        return {"names": list(names), "ips": list(ips), "links": links}
+
+    def _ai_infer_topology_from_configs(self, site):
+        """Use configured AI provider to infer nodes and edges from device configs.
+        Returns (nodes, edges) where nodes is [{id, label}] and edges is list of (tail, head).
+        """
+        try:
+            # Check AI availability
+            provider = (self.ai_provider_combo.get() if hasattr(self, 'ai_provider_combo') else 'None')
+            if not provider or provider == 'None':
+                return [], []
+        except Exception:
+            return [], []
+
+        # Build compact context for AI: devices with metadata and truncated configs
+        devices = []
+        for d in site.get('devices', []) or []:
+            item = {
+                "id": d.get('id') or '',
+                "label": d.get('label') or '',
+                "mgmt_ip": d.get('mgmt_ip') or '',
+                "platform": d.get('platform') or '',
+                "config": ""
+            }
+            p = d.get('config_path')
+            if p and os.path.exists(p):
+                try:
+                    with open(p, 'r', errors='ignore') as f:
+                        txt = f.read()
+                    # Trim extremely long configs; prefer neighbor-relevant sections
+                    # Try extract LLDP/CDP blocks heuristically
+                    blocks = []
+                    for m in re.finditer(r"(?i)(cdp|lldp|neighbors?|display lldp).*?(?:\n\n|$)", txt):
+                        blocks.append(m.group(0))
+                    if blocks:
+                        trimmed = "\n\n".join(blocks)[:12000]
+                    else:
+                        trimmed = txt[:12000]
+                    item["config"] = trimmed
+                except Exception:
+                    item["config"] = ''
+            devices.append(item)
+
+        prompt = (
+            "Analyze the following network device configurations and infer physical/logical connections. "
+            "Use LLDP/CDP outputs, interface descriptions, port-channels, trunk/access VLANs, IP addressing, routing neighbors (OSPF/BGP), and static routes. "
+            "Return STRICT JSON with keys 'nodes' and 'edges'. \n"
+            "- nodes: list of objects {id, label}. Use existing device ids. \n"
+            "- edges: list of objects {tail, head}. Use device ids for endpoints. \n"
+            "Respond ONLY with JSON (no commentary).\n\n"
+        )
+        payload = {
+            "site_id": site.get('id'),
+            "devices": devices
+        }
+        user_request = prompt + json.dumps(payload, indent=2)
+
+        try:
+            manufacturer = (site.get('manufacturer') or self.man_entry.get() or '').strip()
+        except Exception:
+            manufacturer = ''
+
+        # Call AI provider and parse JSON
+        try:
+            raw = self.ai_provider.get_commands(
+                user_request,
+                manufacturer,
+                self.model_entry.get() if hasattr(self, 'model_entry') else '',
+                self.ver_entry.get() if hasattr(self, 'ver_entry') else '',
+                device_type=self.type_entry.get() if hasattr(self, 'type_entry') else '',
+                prompt_style='json'
+            )
+            text = "\n".join(raw) if isinstance(raw, (list, tuple)) else str(raw)
+            # Extract JSON block
+            start = text.find('{')
+            end = text.rfind('}')
+            if start == -1 or end == -1 or end <= start:
+                return [], []
+            data = json.loads(text[start:end+1])
+            nodes = []
+            edges = []
+            for n in (data.get('nodes') or []):
+                nid = n.get('id') or n.get('label') or ''
+                if not nid:
+                    continue
+                lbl = n.get('label') or nid
+                nodes.append({"id": nid, "label": lbl})
+            for e in (data.get('edges') or []):
+                t = e.get('tail') or ''
+                h = e.get('head') or ''
+                if t and h and t != h:
+                    edges.append((t, h))
+            # If AI omitted nodes, synthesize from site devices
+            if not nodes:
+                for d in site.get('devices', []) or []:
+                    nid = d.get('id') or d.get('label') or d.get('mgmt_ip') or ''
+                    if nid:
+                        disp_label = d.get('label') or nid
+                        ip = d.get('mgmt_ip') or ''
+                        label = disp_label if not ip else f"{disp_label}\n{ip}"
+                        nodes.append({"id": nid, "label": label})
+            return nodes, edges
+        except Exception:
+            return [], []
 
     def _guess_mgmt_ip_from_config(self, cfg_text: str):
         try:
@@ -1261,47 +1522,184 @@ class NetApp(ctk.CTk):
             pass
         return None
 
+    def _infer_platform_from_config(self, cfg_text: str):
+        """Best-effort platform inference from config text.
+        Returns one of: Cisco, H3C, Huawei, Juniper, Arista, or ''."""
+        try:
+            text = (cfg_text or '').lower()
+            if any(k in text for k in ["arista eos", "arista networks", "interface ethernet", "management1"]):
+                return "Arista"
+            if any(k in text for k in ["junos:", "set system host-name", "set interfaces ge-", "edit system"]) or re.search(r"\bset\s+system\b", text):
+                return "Juniper"
+            if any(k in text for k in ["huawei", "display current-configuration", "undo ", "sysname "]):
+                return "Huawei"
+            if any(k in text for k in ["h3c", "comware", "sysname ", "super class"]):
+                return "H3C"
+            if any(k in text for k in ["cisco ios", "cisco ios xe", "configure terminal", "interface gigabitethernet", "ip address "]):
+                return "Cisco"
+        except Exception:
+            pass
+        return ""
+
+    def _extract_hostname_from_config_global(self, cfg_text: str):
+        """Extract hostname/sysname from various vendor configs."""
+        try:
+            for line in (cfg_text or '').splitlines()[:300]:
+                m = re.search(r"^\s*(hostname|sysname)\s+([A-Za-z0-9._-]+)", line, re.IGNORECASE)
+                if m:
+                    return m.group(2).strip()
+            m = re.search(r"host-?name\s+([A-Za-z0-9._-]+)", cfg_text or '', re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+        except Exception:
+            pass
+        return ""
+
     def _layout_nodes_with_graphviz(self, nodes, edges):
+        # Build DOT with labels and request plain coordinates from Graphviz
+        dot = "digraph G { graph [bgcolor=white, rankdir=LR]; node [shape=box, style=rounded, color=gray, fontname=Helvetica, fontcolor=white, fillcolor=\"#2b2b2b:#3f3f3f\", gradientangle=270]; edge [color=\"#8a8a8a\", arrowsize=0.7, fontname=Helvetica, fontsize=10]; }"
+        for n in nodes:
+            try:
+                nid = re.sub(r"[^A-Za-z0-9_]", "_", str(n['id']))
+            except Exception:
+                nid = f"node_{id(n)}"
+            img = n.get('image')
+            if img and os.path.exists(img):
+                # HTML-like label to show icon with text below
+                safe_label = (n['label'] or '').replace('"', '\"')
+                dot += (
+                    f"\n{nid} [shape=none, label=<" 
+                    f"<TABLE BORDER='0' CELLBORDER='0' CELLPADDING='2'>" 
+                    f"<TR><TD><IMG SRC='{img}' SCALE='true'/></TD></TR>" 
+                    f"<TR><TD><FONT COLOR='white' FACE='Helvetica'>{safe_label}</FONT></TD></TR>" 
+                    f"</TABLE>>]"
+                )
+            else:
+                dot += f"\n{nid} [label=\"{n['label']}\"]"
+        for e in edges:
+            if isinstance(e, (list, tuple)) and len(e) >= 2:
+                tail, head = e[0], e[1]
+                label = (e[2] if len(e) > 2 else '')
+            else:
+                tail, head = e.get('tail'), e.get('head')
+                label = e.get('label') or ''
+            tail_s = re.sub(r"[^A-Za-z0-9_]", "_", str(tail))
+            head_s = re.sub(r"[^A-Za-z0-9_]", "_", str(head))
+            if label:
+                dot += f"\n{tail_s} -> {head_s} [label=\"{label}\"]"
+            else:
+                dot += f"\n{tail_s} -> {head_s}"
+        # Also render PNG for external preview
+        try:
+            self.render_graphviz_image(dot)
+        except Exception:
+            pass
+
+        # Parse positions using plain format
+        positions = {}
+        canvas_edges = []
         try:
             if graphviz_lib is None:
                 raise RuntimeError("Graphviz not available")
-            dot = "digraph G { graph [bgcolor=white]; node [shape=box, style=rounded, color=gray, fontname=Helvetica, fontcolor=white, fillcolor=\"#2b2b2b:#3f3f3f\", gradientangle=270]; edge [color=\"#8a8a8a\", arrowsize=0.7]; }"
-            for n in nodes:
-                dot += f"\n{n['id']} [label=\"{n['label']}\"]" 
-            for t, h in edges:
-                dot += f"\n{t} -> {h}"
-            img, path = self.render_graphviz_image(dot)
-            # If image rendered, just place default positions; a real layout reader would parse positions.
+            src = graphviz_lib.Source(dot)
+            plain = src.pipe(format='plain').decode('utf-8', errors='ignore')
+            # plain format: node <name> <x> <y> <width> <height> <label>
+            # edge <tail> <head> <n> x1 y1 x2 y2 ...
+            max_x = 0.0
+            max_y = 0.0
+            for line in plain.splitlines():
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                if parts[0] == 'node' and len(parts) >= 6:
+                    name = parts[1]
+                    x = float(parts[2])
+                    y = float(parts[3])
+                    w = float(parts[4]) * 72  # inches to px approx
+                    h = float(parts[5]) * 72
+                    max_x = max(max_x, x)
+                    max_y = max(max_y, y)
+                    positions[name] = {"x": x, "y": y, "w": w, "h": h, "label": " ".join(parts[6:])}
+                elif parts[0] == 'edge' and len(parts) >= 4:
+                    tail = parts[1]
+                    head = parts[2]
+                    canvas_edges.append((tail, head))
+            # Scale to canvas
+            cw = self.topology_canvas.winfo_width() or 900
+            ch = self.topology_canvas.winfo_height() or 600
+            sx = cw / (max_x + 1e-6)
+            sy = ch / (max_y + 1e-6)
         except Exception:
-            pass
-        # Create interactive nodes with default positions
+            positions = {}
+            canvas_edges = []
+            sx = sy = 1.0
+
+        # Create interactive nodes at computed positions (fallback to grid if missing)
         self.clear_topology_layout()
-        w = self.topology_canvas.winfo_width() or 900
-        h = self.topology_canvas.winfo_height() or 600
-        positions = [(w*0.2, h*0.4), (w*0.5, h*0.6), (w*0.8, h*0.4)]
-        for i, n in enumerate(nodes):
-            x, y = positions[i % len(positions)]
-            self._add_topo_node(n['id'], n['label'], x, y, 150, 60)
-        for t, h2 in edges:
-            self._add_topo_edge(t, h2)
+        if positions:
+            for n in nodes:
+                nid = re.sub(r"[^A-Za-z0-9_]", "_", str(n['id']))
+                pos = positions.get(nid)
+                if not pos:
+                    continue
+                x = pos['x'] * sx
+                y = (max(0.0, pos['y'])) * sy
+                w = max(120, pos['w'])
+                h = max(50, pos['h'])
+                self._add_topo_node(n['id'], n['label'], x, ch - y, w, h, n.get('image'))
+        else:
+            # Simple grid fallback
+            cw = self.topology_canvas.winfo_width() or 900
+            ch = self.topology_canvas.winfo_height() or 600
+            cols = max(1, int(len(nodes) ** 0.5))
+            gapx = cw / (cols + 1)
+            gapy = ch / (cols + 1)
+            for i, n in enumerate(nodes):
+                row = i // cols
+                col = i % cols
+                x = gapx * (col + 1)
+                y = gapy * (row + 1)
+                self._add_topo_node(n['id'], n['label'], x, y, 150, 60, n.get('image'))
+
+        # Add edges; preserve labels if any
+        for e in edges:
+            if isinstance(e, (list, tuple)) and len(e) >= 2:
+                self._add_topo_edge(e[0], e[1], (e[2] if len(e) > 2 else ''))
+            else:
+                self._add_topo_edge(e.get('tail'), e.get('head'), e.get('label') or '')
         self._redraw_edges()
 
-    def _add_topo_node(self, node_id, label, x, y, w=140, h=60):
+    def _add_topo_node(self, node_id, label, x, y, w=140, h=60, image_path=None):
         # Rounded rectangle approximation via create_rectangle
         rect = self.topology_canvas.create_rectangle(x, y, x+w, y+h, fill="#2b2b2b", outline="#3f3f3f", width=2)
-        text = self.topology_canvas.create_text(x+w/2, y+h/2, text=label, fill="#e6e6e6", font=("Helvetica", 11))
+        # Optional device icon (drawn above the label)
+        image_item = None
+        if image_path and Image and ImageTk and os.path.exists(image_path):
+            try:
+                img = Image.open(image_path)
+                img = img.resize((48, 48), Image.LANCZOS)
+                if not hasattr(self, '_photo_refs'):
+                    self._photo_refs = {}
+                photo = ImageTk.PhotoImage(img)
+                self._photo_refs[node_id] = photo
+                image_item = self.topology_canvas.create_image(x + w/2, y + 24, image=photo)
+            except Exception:
+                image_item = None
+        # Label text (placed near bottom if icon exists)
+        ty = (y + h - 14) if image_item else (y + h/2)
+        text = self.topology_canvas.create_text(x+w/2, ty, text=label, fill="#e6e6e6", font=("Helvetica", 11))
         handle = self.topology_canvas.create_rectangle(x+w-10, y+h-10, x+w, y+h, fill="#4fa3ff", outline="", width=0)
-        self.topo_nodes[node_id] = {"rect": rect, "text": text, "handle": handle, "x": x, "y": y, "w": w, "h": h, "label": label}
+        self.topo_nodes[node_id] = {"rect": rect, "text": text, "handle": handle, "image": image_item, "x": x, "y": y, "w": w, "h": h, "label": label, "image_path": image_path}
 
-    def _add_topo_edge(self, tail, head):
-        self.topo_edges.append((tail, head))
+    def _add_topo_edge(self, tail, head, label=''):
+        self.topo_edges.append((tail, head, label))
 
     def _redraw_edges(self):
         # Remove old edges
         for item in getattr(self, '_edge_items', []):
             self.topology_canvas.delete(item)
         self._edge_items = []
-        for t, h in self.topo_edges:
+        for t, h, lbl in self.topo_edges:
             tn = self.topo_nodes.get(t)
             hn = self.topo_nodes.get(h)
             if tn and hn:
@@ -1311,6 +1709,172 @@ class NetApp(ctk.CTk):
                 y2 = hn['y'] + hn['h']/2
                 line = self.topology_canvas.create_line(x1, y1, x2, y2, fill="#8a8a8a", width=1.5, arrow=tk.LAST)
                 self._edge_items.append(line)
+                # Place endpoint port labels close to the device touch points
+                if lbl:
+                    # Split "local ↔ remote" if present
+                    parts = [p.strip() for p in re.split(r"\s*[↔\-]\s*", lbl) if p.strip()]
+                    local_lbl = parts[0] if parts else lbl
+                    remote_lbl = parts[1] if len(parts) > 1 else ''
+
+                    dx = x2 - x1
+                    dy = y2 - y1
+                    # Offset for label away from line slightly
+                    norm = (dx**2 + dy**2) ** 0.5 or 1.0
+                    ox = (-dy / norm) * 10
+                    oy = (dx / norm) * 10
+
+                    # Tail (local) label near tail-side edge
+                    tail_pos_x = x1
+                    tail_pos_y = y1
+                    # Decide which side of the rectangle to anchor based on dominant axis
+                    if abs(dx) >= abs(dy):
+                        # horizontal: place just outside left/right edge
+                        sx = tn['x'] + (tn['w'] if dx > 0 else 0)
+                        sy = y1
+                        tail_pos_x, tail_pos_y = sx + (6 if dx > 0 else -6), sy
+                    else:
+                        # vertical: place just outside top/bottom edge
+                        sx = tn['y'] + (tn['h'] if dy > 0 else 0)
+                        sy = tn['x'] + tn['w']/2
+                        tail_pos_x, tail_pos_y = sy, sx + (6 if dy > 0 else -6)
+
+                    # Head (remote) label near head-side edge
+                    head_pos_x = x2
+                    head_pos_y = y2
+                    if abs(dx) >= abs(dy):
+                        sx = hn['x'] + (0 if dx > 0 else hn['w'])
+                        sy = y2
+                        head_pos_x, head_pos_y = sx + (-6 if dx > 0 else 6), sy
+                    else:
+                        sx = hn['y'] + (0 if dy > 0 else hn['h'])
+                        sy = hn['x'] + hn['w']/2
+                        head_pos_x, head_pos_y = sy, sx + (-6 if dy > 0 else 6)
+
+                    # Apply small perpendicular offset to reduce overlap
+                    tail_text = self.topology_canvas.create_text(tail_pos_x + ox, tail_pos_y + oy, text=local_lbl, fill="#4d4d4d", font=("Helvetica", 9))
+                    self._edge_items.append(tail_text)
+                    if remote_lbl:
+                        head_text = self.topology_canvas.create_text(head_pos_x + ox, head_pos_y + oy, text=remote_lbl, fill="#4d4d4d", font=("Helvetica", 9))
+                        self._edge_items.append(head_text)
+
+    def _snap_to_grid(self, value):
+        try:
+            g = getattr(self, 'grid_size', 40)
+            return int(round(value / g) * g)
+        except Exception:
+            return value
+
+    def _draw_grid(self, event=None):
+        # Clear old grid
+        try:
+            self.topology_canvas.delete("grid")
+        except Exception:
+            pass
+        # Draw grid if enabled
+        try:
+            if not getattr(self, 'show_grid_var', None) or not self.show_grid_var.get():
+                return
+            w = self.topology_canvas.winfo_width()
+            h = self.topology_canvas.winfo_height()
+            g = getattr(self, 'grid_size', 40)
+            # Light grid for white background
+            color = "#e0e0e0"
+            for x in range(0, w, g):
+                self.topology_canvas.create_line(x, 0, x, h, fill=color, tags=("grid",))
+            for y in range(0, h, g):
+                self.topology_canvas.create_line(0, y, w, y, fill=color, tags=("grid",))
+        except Exception:
+            pass
+
+    def _on_topology_canvas_configure(self, event):
+        # Redraw grid on resize
+        try:
+            self._draw_grid()
+        except Exception:
+            pass
+
+    def _scale_topology(self, scale):
+        # Scale nodes and edges around canvas center
+        try:
+            cw = self.topology_canvas.winfo_width()
+            ch = self.topology_canvas.winfo_height()
+            px, py = cw / 2.0, ch / 2.0
+            for nid, n in self.topo_nodes.items():
+                x, y, w, h = n['x'], n['y'], n['w'], n['h']
+                nx = px + (x - px) * scale
+                ny = py + (y - py) * scale
+                nw = max(10, w * scale)
+                nh = max(10, h * scale)
+                n['x'], n['y'], n['w'], n['h'] = nx, ny, nw, nh
+                self.topology_canvas.coords(n['rect'], nx, ny, nx+nw, ny+nh)
+                ty = (ny + nh - 14) if n.get('image') else (ny + nh/2)
+                self.topology_canvas.coords(n['text'], nx+nw/2, ty)
+                self.topology_canvas.coords(n['handle'], nx+nw-10, ny+nh-10, nx+nw, ny+nh)
+                if n.get('image'):
+                    self.topology_canvas.coords(n['image'], nx + nw/2, ny + 24)
+            self._redraw_edges()
+        except Exception:
+            pass
+
+    def _fit_topology_to_view(self):
+        # Scale and center the layout to fit the canvas
+        try:
+            if not self.topo_nodes:
+                return
+            min_x = min(n['x'] for n in self.topo_nodes.values())
+            min_y = min(n['y'] for n in self.topo_nodes.values())
+            max_x = max(n['x'] + n['w'] for n in self.topo_nodes.values())
+            max_y = max(n['y'] + n['h'] for n in self.topo_nodes.values())
+            bbox_w = max_x - min_x
+            bbox_h = max_y - min_y
+            cw = self.topology_canvas.winfo_width()
+            ch = self.topology_canvas.winfo_height()
+            if bbox_w <= 0 or bbox_h <= 0 or cw <= 0 or ch <= 0:
+                return
+            margin = 40
+            scale_x = (cw - margin) / bbox_w
+            scale_y = (ch - margin) / bbox_h
+            scale = min(scale_x, scale_y)
+            # Scale around bbox center
+            cx = (min_x + max_x) / 2.0
+            cy = (min_y + max_y) / 2.0
+            for nid, n in self.topo_nodes.items():
+                x, y, w, h = n['x'], n['y'], n['w'], n['h']
+                nx = cx + (x - cx) * scale
+                ny = cy + (y - cy) * scale
+                nw = max(10, w * scale)
+                nh = max(10, h * scale)
+                n['x'], n['y'], n['w'], n['h'] = nx, ny, nw, nh
+                self.topology_canvas.coords(n['rect'], nx, ny, nx+nw, ny+nh)
+                ty = (ny + nh - 14) if n.get('image') else (ny + nh/2)
+                self.topology_canvas.coords(n['text'], nx+nw/2, ty)
+                self.topology_canvas.coords(n['handle'], nx+nw-10, ny+nh-10, nx+nw, ny+nh)
+                if n.get('image'):
+                    self.topology_canvas.coords(n['image'], nx + nw/2, ny + 24)
+            # Center to canvas
+            new_min_x = min(n['x'] for n in self.topo_nodes.values())
+            new_min_y = min(n['y'] for n in self.topo_nodes.values())
+            new_max_x = max(n['x'] + n['w'] for n in self.topo_nodes.values())
+            new_max_y = max(n['y'] + n['h'] for n in self.topo_nodes.values())
+            px, py = cw / 2.0, ch / 2.0
+            nb_cx = (new_min_x + new_max_x) / 2.0
+            nb_cy = (new_min_y + new_max_y) / 2.0
+            dx = px - nb_cx
+            dy = py - nb_cy
+            for nid, n in self.topo_nodes.items():
+                n['x'] += dx
+                n['y'] += dy
+                x, y, w, h = n['x'], n['y'], n['w'], n['h']
+                self.topology_canvas.coords(n['rect'], x, y, x+w, y+h)
+                ty = (y + h - 14) if n.get('image') else (y + h/2)
+                self.topology_canvas.coords(n['text'], x+w/2, ty)
+                self.topology_canvas.coords(n['handle'], x+w-10, y+h-10, x+w, y+h)
+                if n.get('image'):
+                    self.topology_canvas.coords(n['image'], x + w/2, y + 24)
+            self._redraw_edges()
+            self._draw_grid()
+        except Exception:
+            pass
 
     def _hit_node(self, event):
         # Return node_id if click is on rect or text; set resizing if on handle
@@ -1332,30 +1896,65 @@ class NetApp(ctk.CTk):
             self._drag_state['node'] = nid
             self._drag_state['dx'] = event.x - n['x']
             self._drag_state['dy'] = event.y - n['y']
+        else:
+            # Begin canvas panning when clicking empty space
+            self._drag_state['node'] = None
+            self._drag_state['resizing'] = False
+            self._drag_state['panning'] = True
+            self._drag_state['pan_last'] = (event.x, event.y)
 
     def _topology_on_drag(self, event):
         nid = self._drag_state.get('node')
         if not nid:
+            # Panning mode: move all nodes by delta
+            if self._drag_state.get('panning'):
+                last = self._drag_state.get('pan_last') or (event.x, event.y)
+                dx = event.x - last[0]
+                dy = event.y - last[1]
+                self._drag_state['pan_last'] = (event.x, event.y)
+                if dx == 0 and dy == 0:
+                    return
+                for nid2, n2 in self.topo_nodes.items():
+                    n2['x'] += dx
+                    n2['y'] += dy
+                    x2, y2, w2, h2 = n2['x'], n2['y'], n2['w'], n2['h']
+                    self.topology_canvas.coords(n2['rect'], x2, y2, x2+w2, y2+h2)
+                    ty2 = (y2 + h2 - 14) if n2.get('image') else (y2 + h2/2)
+                    self.topology_canvas.coords(n2['text'], x2+w2/2, ty2)
+                    self.topology_canvas.coords(n2['handle'], x2+w2-10, y2+h2-10, x2+w2, y2+h2)
+                    if n2.get('image'):
+                        self.topology_canvas.coords(n2['image'], x2 + w2/2, y2 + 24)
+                self._redraw_edges()
             return
         n = self.topo_nodes[nid]
         if self._drag_state.get('resizing'):
             w = max(80, event.x - n['x'])
             h = max(40, event.y - n['y'])
+            if getattr(self, 'grid_snap_var', None) and self.grid_snap_var.get():
+                w = max(80, self._snap_to_grid(w))
+                h = max(40, self._snap_to_grid(h))
             n['w'], n['h'] = w, h
         else:
             x = event.x - self._drag_state['dx']
             y = event.y - self._drag_state['dy']
+            if getattr(self, 'grid_snap_var', None) and self.grid_snap_var.get():
+                x = self._snap_to_grid(x)
+                y = self._snap_to_grid(y)
             n['x'], n['y'] = x, y
         # Update canvas items
         x, y, w, h = n['x'], n['y'], n['w'], n['h']
         self.topology_canvas.coords(n['rect'], x, y, x+w, y+h)
-        self.topology_canvas.coords(n['text'], x+w/2, y+h/2)
+        ty = (y + h - 14) if n.get('image') else (y + h/2)
+        self.topology_canvas.coords(n['text'], x+w/2, ty)
         self.topology_canvas.coords(n['handle'], x+w-10, y+h-10, x+w, y+h)
+        if n.get('image'):
+            self.topology_canvas.coords(n['image'], x + w/2, y + 24)
         self._redraw_edges()
 
     def _topology_on_release(self, event):
         self._drag_state['node'] = None
         self._drag_state['resizing'] = False
+        self._drag_state['panning'] = False
 
     def _topology_on_double_click(self, event):
         nid = self._hit_node(event)
@@ -1372,6 +1971,16 @@ class NetApp(ctk.CTk):
         self.topo_nodes = {}
         self.topo_edges = []
         self._edge_items = []
+        # Clear photo references to allow GC
+        try:
+            self._photo_refs = {}
+        except Exception:
+            pass
+        # Redraw grid if enabled
+        try:
+            self._draw_grid()
+        except Exception:
+            pass
 
     def save_topology_layout(self):
         layout = {
@@ -1403,9 +2012,17 @@ class NetApp(ctk.CTk):
                 self.sites = []
                 with open(self.sites_file, 'w') as f:
                     json.dump(self.sites, f, indent=2)
+                try:
+                    self.log_to_terminal(f"Initialized empty sites file at {self.sites_file}", "info")
+                except Exception:
+                    pass
                 return
             with open(self.sites_file, 'r') as f:
                 self.sites = json.load(f) or []
+            try:
+                self.log_to_terminal(f"Loaded {len(self.sites)} site(s) from {self.sites_file}", "info")
+            except Exception:
+                pass
         except Exception:
             self.sites = []
 
@@ -1418,6 +2035,13 @@ class NetApp(ctk.CTk):
             messagebox.showerror("Save Error", str(e))
 
     def _build_sites_tab(self, parent):
+        # If already built, just refresh
+        if getattr(self, 'sites_tab_built', False):
+            try:
+                self._populate_sites_tree()
+            except Exception:
+                pass
+            return
         container = ctk.CTkFrame(parent)
         container.pack(fill="both", expand=True, padx=8, pady=6)
         toolbar = ctk.CTkFrame(container)
@@ -1426,39 +2050,72 @@ class NetApp(ctk.CTk):
         ctk.CTkButton(toolbar, text="Add Site", command=self._add_site).pack(side=tk.LEFT, padx=6)
         ctk.CTkButton(toolbar, text="Add Device", command=self._add_device).pack(side=tk.LEFT, padx=6)
         ctk.CTkButton(toolbar, text="Attach Config", command=self._attach_device_config).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(toolbar, text="Attach Site Configs", command=self._attach_site_configs).pack(side=tk.LEFT, padx=6)
         ctk.CTkButton(toolbar, text="Delete", command=self._delete_site_or_device).pack(side=tk.LEFT, padx=6)
         ctk.CTkButton(toolbar, text="Save", command=self.save_sites).pack(side=tk.LEFT, padx=6)
 
         # Split into two panes: left sites, right devices in selected site
-        paned = ttk.Panedwindow(container, orient=tk.HORIZONTAL)
-        paned.pack(fill="both", expand=True, padx=8, pady=6)
+        try:
+            paned = ttk.Panedwindow(container, orient=tk.HORIZONTAL)
+            # Hide sash to keep a clean look and set weights roughly 1:2
+            try:
+                paned.configure(sashwidth=8)
+            except Exception:
+                pass
+            paned.pack(fill="both", expand=True, padx=8, pady=6)
 
-        left = ctk.CTkFrame(paned)
-        right = ctk.CTkFrame(paned)
-        paned.add(left, weight=1)
-        paned.add(right, weight=2)
+            left = ctk.CTkFrame(paned)
+            right = ctk.CTkFrame(paned)
+            paned.add(left, weight=1)
+            paned.add(right, weight=2)
 
-        # Left: sites list
-        ctk.CTkLabel(left, text="Sites", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=8, pady=(6,2))
-        self.sites_list = ttk.Treeview(left, columns=("name",), show='tree headings', style="DarkTreeview", height=12)
-        self.sites_list.heading('#0', text='ID')
-        self.sites_list.heading('name', text='Name')
-        self.sites_list.pack(fill="both", expand=True, padx=8, pady=6)
-        self.sites_list.bind('<<TreeviewSelect>>', self._on_site_list_select)
+            # Left: sites list
+            ctk.CTkLabel(left, text="Sites", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=8, pady=(6,2))
+            # Use simple tree display to guarantee visibility even if headings styling fails
+            self.sites_list = ttk.Treeview(left, columns=("name",), show='tree', style="Dark.Treeview", height=12)
+            try:
+                self.sites_list.heading('#0', text='ID')
+                self.sites_list.heading('name', text='Name')
+            except Exception:
+                pass
+            self.sites_list.pack(fill="both", expand=True, padx=8, pady=6)
+            self.sites_list.bind('<<TreeviewSelect>>', self._on_site_list_select)
 
-        # Right: devices for selected site
-        ctk.CTkLabel(right, text="Devices", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=8, pady=(6,2))
-        self.devices_tree = ttk.Treeview(right, columns=("label","mgmt_ip","platform","config"), show='tree headings', style="DarkTreeview")
-        self.devices_tree.heading('#0', text='ID')
-        self.devices_tree.heading('label', text='Label')
-        self.devices_tree.heading('mgmt_ip', text='Mgmt IP')
-        self.devices_tree.heading('platform', text='Platform')
-        self.devices_tree.heading('config', text='Config')
-        self.devices_tree.pack(fill="both", expand=True, padx=8, pady=6)
-        self.devices_tree.bind('<<TreeviewSelect>>', self._on_devices_tree_select)
+            # Right: devices for selected site
+            ctk.CTkLabel(right, text="Devices", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=8, pady=(6,2))
+            self.devices_tree = ttk.Treeview(right, columns=("label","mgmt_ip","platform","config"), show='tree headings', style="Dark.Treeview")
+            self.devices_tree.heading('#0', text='ID')
+            self.devices_tree.heading('label', text='Label')
+            self.devices_tree.heading('mgmt_ip', text='Mgmt IP')
+            self.devices_tree.heading('platform', text='Platform')
+            self.devices_tree.heading('config', text='Config')
+            self.devices_tree.pack(fill="both", expand=True, padx=8, pady=6)
+            self.devices_tree.bind('<<TreeviewSelect>>', self._on_devices_tree_select)
+        except Exception as e:
+            # Fallback: single list if paned/window creation fails
+            self.log_to_terminal(f"Sites view fallback activated: {e}", "error")
+            try:
+                ctk.CTkLabel(container, text="Sites", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=8, pady=(6,2))
+            except Exception:
+                pass
+            self.sites_list = ttk.Treeview(container, columns=("name",), show='tree', style="Dark.Treeview", height=12)
+            try:
+                self.sites_list.heading('#0', text='ID')
+                self.sites_list.heading('name', text='Name')
+            except Exception:
+                pass
+            self.sites_list.pack(fill="both", expand=True, padx=8, pady=6)
+            self.sites_list.bind('<<TreeviewSelect>>', self._on_site_list_select)
+            # Devices pane not available in fallback; guard usages elsewhere
+            self.devices_tree = None
 
         # Populate initial data
-        self._populate_sites_tree()
+        try:
+            self._populate_sites_tree()
+        except Exception:
+            pass
+        # Mark built
+        self.sites_tab_built = True
 
     def _build_settings_tab(self, parent):
         container = ctk.CTkFrame(parent)
@@ -1538,47 +2195,150 @@ class NetApp(ctk.CTk):
 
     def _populate_sites_tree(self):
         # Populate left sites list
+        if not hasattr(self, 'sites_list') or self.sites_list is None:
+            # UI not built yet or failed; nothing to populate
+            return
         try:
             for item in self.sites_list.get_children():
                 self.sites_list.delete(item)
         except Exception:
             pass
-        for s in self.sites:
+        # Ensure reasonable column widths
+        try:
+            self.sites_list.column('#0', width=180, anchor='w')
+            self.sites_list.column('name', width=240, anchor='w')
+        except Exception:
+            pass
+        for s in getattr(self, 'sites', []) or []:
             sid = s.get('id') or f"site_{id(s)}"
             name = s.get('name') or sid
-            self.sites_list.insert('', 'end', iid=sid, text=sid, values=(name,))
+            # Always use a unique Treeview iid to avoid duplicate insert errors
+            iid_key = f"site_{id(s)}"
+            try:
+                # Ensure something visible even without headings: put both in text
+                self.sites_list.insert('', 'end', iid=iid_key, text=f"{sid}    {name}", values=(name,))
+            except Exception as e:
+                try:
+                    self.log_to_terminal(f"Sites list insert failed: {e}", "error")
+                except Exception:
+                    pass
         # Populate devices for currently selected site
         try:
-            if getattr(self, 'selected_site_id', None):
+            if getattr(self, 'selected_site_id', None) and hasattr(self, 'devices_tree') and self.devices_tree is not None:
                 self._populate_devices_tree(self.selected_site_id)
         except Exception:
             pass
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        # Keep topology site selector in sync
+        try:
+            self._refresh_topology_site_combo()
+        except Exception:
+            pass
+        try:
+            self.log_to_terminal(f"Sites tree populated with {len(self.sites_list.get_children())} item(s).", "info")
+        except Exception:
+            pass
 
-    def _populate_devices_tree(self, site_id):
+    def _select_site_row_by_id(self, site_id: str):
+        """Find and select the row in the sites_list corresponding to the given site_id."""
+        try:
+            if not hasattr(self, 'sites_list') or self.sites_list is None:
+                return
+            for iid in self.sites_list.get_children():
+                try:
+                    text = self.sites_list.item(iid, 'text') or ''
+                except Exception:
+                    text = ''
+                # text is formatted as "<id>    <name>"; match by prefix
+                if text.startswith(str(site_id)):
+                    try:
+                        self.sites_list.selection_set(iid)
+                        self.sites_list.focus(iid)
+                        self.sites_list.see(iid)
+                    except Exception:
+                        pass
+                    return
+        except Exception:
+            pass
+
+    def _get_site_by_selector(self, selector):
+        """Resolve a site from either a Treeview iid (e.g., 'site_12345') or a real site id.
+        Falls back to matching the sites_list row text prefix '<id>    <name>' when needed."""
+        try:
+            # Fast path: direct id match
+            for s in getattr(self, 'sites', []) or []:
+                if s.get('id') == selector:
+                    return s
+            # If selector looks like a Treeview iid, try to match via row text
+            if hasattr(self, 'sites_list') and self.sites_list is not None:
+                if selector in self.sites_list.get_children():
+                    try:
+                        text = self.sites_list.item(selector, 'text') or ''
+                        sid = (text.split('    ')[0] or '').strip()
+                        for s in getattr(self, 'sites', []) or []:
+                            if s.get('id') == sid:
+                                return s
+                    except Exception:
+                        pass
+            # Final fallback: scan rows and match by text prefix
+            try:
+                for iid in self.sites_list.get_children():
+                    text = self.sites_list.item(iid, 'text') or ''
+                    sid = (text.split('    ')[0] or '').strip()
+                    for s in getattr(self, 'sites', []) or []:
+                        if s.get('id') == sid and (selector == iid or selector == sid):
+                            return s
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return None
+
+    def _populate_devices_tree(self, site_selector):
         try:
             for item in self.devices_tree.get_children():
                 self.devices_tree.delete(item)
         except Exception:
             pass
-        site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == site_id), None)
+        site = self._get_site_by_selector(site_selector)
         if not site:
             return
-        for d in site.get('devices', []):
+        for d in site.get('devices', []) or []:
             did = d.get('id') or f"dev_{id(d)}"
             cfg = d.get('config_path', '')
             try:
                 cfg = os.path.basename(cfg) if cfg else ''
             except Exception:
                 pass
-            self.devices_tree.insert('', 'end', iid=did, text=did, values=(d.get('label',''), d.get('mgmt_ip',''), d.get('platform',''), cfg))
+            try:
+                self.devices_tree.insert('', 'end', iid=did, text=did, values=(d.get('label',''), d.get('mgmt_ip',''), d.get('platform',''), cfg))
+            except Exception:
+                pass
 
     def _on_site_list_select(self, event=None):
         try:
             sel = self.sites_list.selection()
             if not sel:
                 return
-            self.selected_site_id = sel[0]
+            iid = sel[0]
+            text = self.sites_list.item(iid, 'text') or ''
+            sid = (text.split('    ')[0] or '').strip()
+            # Track both iid and actual site id for robustness
+            self.selected_site_iid = iid
+            self.selected_site_id = sid
             self._populate_devices_tree(self.selected_site_id)
+            # Sync manufacturer combo with selected site (if stored)
+            try:
+                site = next((s for s in self.sites if (s.get('id') or '') == self.selected_site_id), None)
+                man = (site.get('manufacturer') or '').strip() if site else ''
+                if man:
+                    self.man_combo.set(man.title())
+                    self._on_manufacturer_combo_changed(man.title())
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -1624,74 +2384,140 @@ class NetApp(ctk.CTk):
     def _add_site(self):
         sid = simpledialog.askstring("Add Site", "Enter site ID:")
         name = simpledialog.askstring("Add Site", "Enter site name:")
+        sid = (sid or '').strip()
+        name = (name or '').strip()
         if not sid:
+            try:
+                messagebox.showerror("Add Site", "Site ID is required.")
+            except Exception:
+                pass
             return
-        self.sites.append({"id": sid, "name": name or sid, "devices": []})
-        self._populate_sites_tree()
+        # Enforce unique site IDs to avoid editing/duplicating previous site
+        try:
+            if any(str(s.get('id')) == sid for s in getattr(self, 'sites', []) or []):
+                try:
+                    messagebox.showerror("Add Site", f"A site with ID '{sid}' already exists.")
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+        self.sites.append({"id": sid, "name": (name or sid), "devices": [], "configs": []})
+        try:
+            self.log_to_terminal(f"Site added: {sid} ({name or sid})", "info")
+        except Exception:
+            pass
+        # Select the newly added site and refresh lists
+        try:
+            self.selected_site_id = sid
+        except Exception:
+            pass
+        try:
+            self._populate_sites_tree()
+        except Exception:
+            pass
+        # Focus newly added site row, if list exists
+        try:
+            self._select_site_row_by_id(sid)
+        except Exception:
+            pass
+        try:
+            self.save_sites()
+        except Exception:
+            pass
+        # Refresh topology site selector if present
+        try:
+            self._refresh_topology_site_combo()
+        except Exception:
+            pass
 
     def _add_device(self):
-        if not self.selected_site_id:
+        site = None
+        try:
+            site = self._get_site_by_selector(getattr(self, 'selected_site_id', None) or getattr(self, 'selected_site_iid', None))
+        except Exception:
+            site = None
+        if not site:
             messagebox.showinfo("Select Site", "Select a site first.")
             return
-        did = simpledialog.askstring("Add Device", "Enter device ID:")
-        label = simpledialog.askstring("Add Device", "Enter label:")
-        mgmt = simpledialog.askstring("Add Device", "Enter mgmt IP:")
-        platform = simpledialog.askstring("Add Device", "Enter platform (Cisco/H3C/Huawei/Juniper/Arista):")
-        site = next((s for s in self.sites if s.get('id') == self.selected_site_id), None)
-        if not site:
-            # try iid mapping
-            site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == self.selected_site_id), None)
-        if not site:
-            return
-        site.setdefault('devices', []).append({"id": did or f"dev_{len(site.get('devices', []))+1}", "label": label or did or mgmt, "mgmt_ip": mgmt or '', "platform": platform or '' , "site_id": site.get('id'), "config_path": ''})
-        try:
-            self._populate_devices_tree(site.get('id') or self.selected_site_id)
-        except Exception:
-            self._populate_sites_tree()
+        # Open unified editor for adding device and attaching config
+        self._open_device_editor(site, device=None)
 
     def _attach_device_config(self):
         try:
-            # Use selection from right devices pane
+            # Use selection from right devices pane; fall back to unified editor if none
             dev_sel = []
             try:
                 dev_sel = self.devices_tree.selection()
             except Exception:
                 pass
-            if not dev_sel:
-                messagebox.showinfo("Select Device", "Select a device in the right-pane Devices table.")
-                return
-            did = dev_sel[0]
-            sid = self.selected_site_id
-            site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == sid), None)
+            site = self._get_site_by_selector(getattr(self, 'selected_site_id', None) or getattr(self, 'selected_site_iid', None))
             if not site:
+                messagebox.showinfo("Select Site", "Select a site first.")
                 return
-            dev = next((d for d in site.get('devices', []) if (d.get('id') or f"dev_{id(d)}") == did), None)
-            if not dev:
-                return
-            path = filedialog.askopenfilename(title="Select device config", filetypes=[("Text files","*.txt"), ("Config files","*.cfg"), ("All files","*.*")])
-            if not path:
-                return
-            dev['config_path'] = path
-            # Optionally, try to extract candidate mgmt IP if missing
-            try:
-                if not dev.get('mgmt_ip') and os.path.exists(path):
-                    with open(path, 'r', errors='ignore') as f:
-                        txt = f.read()
-                    mgmt_ip = self._guess_mgmt_ip_from_config(txt)
-                    if mgmt_ip:
-                        dev['mgmt_ip'] = mgmt_ip
-            except Exception:
-                pass
-            self.save_sites()
-            try:
-                self._populate_devices_tree(sid)
-            except Exception:
-                self._populate_sites_tree()
+            dev = None
+            if dev_sel:
+                did = dev_sel[0]
+                dev = next((d for d in site.get('devices', []) if (d.get('id') or f"dev_{id(d)}") == did), None)
+            # Open the same editor for attaching config; if a device is selected, prefill
+            self._open_device_editor(site, device=dev)
         except Exception as e:
             try:
                 messagebox.showerror("Attach Config Error", str(e))
             except Exception:
                 pass
+
+    def _attach_site_configs(self):
+        # Import multiple config files as devices into the selected site
+        try:
+            site = self._get_site_by_selector(getattr(self, 'selected_site_id', None) or getattr(self, 'selected_site_iid', None))
+        except Exception:
+            site = None
+        if site is None:
+            try:
+                messagebox.showinfo("Attach Site Configs", "Select a site in the left Sites list first.")
+            except Exception:
+                pass
+            return
+        try:
+            files = filedialog.askopenfilenames(title="Select config files", filetypes=[("Text files","*.txt"), ("Config files","*.cfg"), ("All files","*.*")])
+        except Exception:
+            files = []
+        if not files:
+            return
+        for path in files:
+            try:
+                with open(path, 'r', errors='ignore') as f:
+                    txt = f.read()
+                host = self._extract_hostname_from_config_global(txt) or ''
+                ip = self._guess_mgmt_ip_from_config(txt) or ''
+                plat = self._infer_platform_from_config(txt) or ''
+                did = (host.strip() or ip.strip() or f"dev_{len(site.get('devices', []))+1}")
+                did = re.sub(r"[^A-Za-z0-9_.-]", "_", did)
+                lbl = host.strip() or did
+                # Avoid duplicates: update existing device if ID matches
+                existing = next((d for d in site.get('devices', []) if (d.get('id') or '') == did), None)
+                if existing:
+                    existing.update({"label": lbl, "mgmt_ip": ip, "platform": plat, "config_path": path})
+                else:
+                    site.setdefault('devices', []).append({
+                        "id": did,
+                        "label": lbl,
+                        "mgmt_ip": ip,
+                        "platform": plat,
+                        "site_id": site.get('id'),
+                        "config_path": path
+                    })
+            except Exception:
+                pass
+        try:
+            self.save_sites()
+        except Exception:
+            pass
+        try:
+            self._populate_devices_tree(site.get('id'))
+        except Exception:
+            self._populate_sites_tree()
 
     def _delete_site_or_device(self):
         # If a device is selected in right pane, delete it; else delete selected site
@@ -1701,12 +2527,15 @@ class NetApp(ctk.CTk):
             dev_sel = []
         if dev_sel:
             did = dev_sel[0]
-            sid = self.selected_site_id
-            site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == sid), None)
+            site = self._get_site_by_selector(getattr(self, 'selected_site_id', None) or getattr(self, 'selected_site_iid', None))
             if site:
                 site['devices'] = [d for d in site.get('devices', []) if (d.get('id') or f"dev_{id(d)}") != did]
+                try:
+                    self.save_sites()
+                except Exception:
+                    pass
             try:
-                self._populate_devices_tree(sid)
+                self._populate_devices_tree(getattr(self, 'selected_site_id', None) or getattr(self, 'selected_site_iid', None))
             except Exception:
                 self._populate_sites_tree()
             return
@@ -1719,9 +2548,183 @@ class NetApp(ctk.CTk):
         if not sel:
             return
         iid = sel[0]
-        self.sites = [s for s in self.sites if (s.get('id') or f"site_{id(s)}") != iid]
+        # Resolve site via iid -> id, then delete by id
+        site = None
+        try:
+            text = self.sites_list.item(iid, 'text') or ''
+            sid = (text.split('    ')[0] or '').strip()
+            site = next((s for s in self.sites if s.get('id') == sid), None)
+        except Exception:
+            site = None
+        if site:
+            self.sites = [s for s in self.sites if s.get('id') != site.get('id')]
+        else:
+            # Fallback: remove by comparing iid-like
+            self.sites = [s for s in self.sites if (f"site_{id(s)}") != iid]
         self.selected_site_id = None
+        try:
+            self.save_sites()
+        except Exception:
+            pass
         self._populate_sites_tree()
+        try:
+            self._refresh_topology_site_combo()
+        except Exception:
+            pass
+
+    def _open_device_editor(self, site, device=None):
+        """Unified modal to add a device and attach a config."""
+        try:
+            win = tk.Toplevel(self)
+            win.title("Device Editor")
+            win.transient(self)
+            win.grab_set()
+            # Fields
+            ttk.Label(win, text="Device ID").grid(row=0, column=0, padx=8, pady=6, sticky='e')
+            id_var = tk.StringVar(value=(device.get('id') if device else ''))
+            id_entry = ttk.Entry(win, textvariable=id_var, width=28)
+            id_entry.grid(row=0, column=1, padx=8, pady=6, sticky='w')
+
+            ttk.Label(win, text="Label").grid(row=1, column=0, padx=8, pady=6, sticky='e')
+            label_var = tk.StringVar(value=(device.get('label') if device else ''))
+            label_entry = ttk.Entry(win, textvariable=label_var, width=28)
+            label_entry.grid(row=1, column=1, padx=8, pady=6, sticky='w')
+
+            ttk.Label(win, text="Mgmt IP").grid(row=2, column=0, padx=8, pady=6, sticky='e')
+            mgmt_var = tk.StringVar(value=(device.get('mgmt_ip') if device else ''))
+            mgmt_entry = ttk.Entry(win, textvariable=mgmt_var, width=28)
+            mgmt_entry.grid(row=2, column=1, padx=8, pady=6, sticky='w')
+
+            # Manufacturer selection to apply vendor logic site-wide
+            ttk.Label(win, text="Manufacturer").grid(row=3, column=0, padx=8, pady=6, sticky='e')
+            default_man = ''
+            try:
+                default_man = (site.get('manufacturer') or device.get('platform') or '').strip()
+            except Exception:
+                default_man = ''
+            man_var = tk.StringVar(value=(default_man.title() if default_man else ''))
+            man_combo = ttk.Combobox(win, textvariable=man_var, width=26, values=["Cisco","H3C","Huawei","Juniper","Arista","Other"])
+            man_combo.grid(row=3, column=1, padx=8, pady=6, sticky='w')
+
+            ttk.Label(win, text="Platform").grid(row=4, column=0, padx=8, pady=6, sticky='e')
+            plat_var = tk.StringVar(value=(device.get('platform') if device else ''))
+            plat_entry = ttk.Entry(win, textvariable=plat_var, width=28)
+            plat_entry.grid(row=4, column=1, padx=8, pady=6, sticky='w')
+
+            ttk.Label(win, text="Config Path").grid(row=5, column=0, padx=8, pady=6, sticky='e')
+            cfg_var = tk.StringVar(value=(device.get('config_path') if device else ''))
+            cfg_entry = ttk.Entry(win, textvariable=cfg_var, width=28)
+            cfg_entry.grid(row=5, column=1, padx=8, pady=6, sticky='w')
+
+            def browse():
+                path = filedialog.askopenfilename(title="Select device config", filetypes=[("Text files","*.txt"), ("Config files","*.cfg"), ("All files","*.*")])
+                if path:
+                    cfg_var.set(path)
+                    try:
+                        with open(path, 'r', errors='ignore') as f:
+                            txt = f.read()
+                        # Auto-fill mgmt IP
+                        ip = self._guess_mgmt_ip_from_config(txt)
+                        if ip:
+                            mgmt_var.set(ip)
+                        # Infer platform
+                        plat = self._infer_platform_from_config(txt)
+                        if plat:
+                            plat_var.set(plat)
+                            # Align manufacturer dropdown with inferred platform
+                            try:
+                                man_combo.set(plat.title())
+                            except Exception:
+                                pass
+                        # Suggest hostname for label/id
+                        host = self._extract_hostname_from_config_global(txt)
+                        if host:
+                            if not (label_var.get() or '').strip():
+                                label_var.set(host)
+                            if not (id_var.get() or '').strip():
+                                safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", host)
+                                id_var.set(safe_id)
+                    except Exception:
+                        pass
+            ttk.Button(win, text="Browse", command=browse).grid(row=5, column=2, padx=8, pady=6)
+
+            def on_save():
+                try:
+                    did = id_var.get().strip() or (device.get('id') if device and device.get('id') else f"dev_{len(site.get('devices', []))+1}")
+                    lbl = label_var.get().strip() or did
+                    mgmt = mgmt_var.get().strip()
+                    plat = plat_var.get().strip()
+                    cfgp = cfg_var.get().strip()
+                    sel_man = (man_var.get() or '').strip()
+                    # Apply manufacturer site-wide (lowercase for internal logic)
+                    if sel_man:
+                        try:
+                            site['manufacturer'] = sel_man.lower()
+                        except Exception:
+                            pass
+                        # Sync main manufacturer UI and device type mapping
+                        try:
+                            self.man_combo.set(sel_man)
+                            self._on_manufacturer_combo_changed(sel_man)
+                        except Exception:
+                            pass
+                    # If a device with same ID exists, update it; otherwise append new
+                    existing = None
+                    try:
+                        existing = next((d for d in site.get('devices', []) if (d.get('id') or '') == did), None)
+                    except Exception:
+                        existing = None
+                    if device is None and existing is None:
+                        # Default device platform to selected manufacturer if not explicitly set
+                        eff_plat = plat or sel_man
+                        new_dev = {"id": did, "label": lbl, "mgmt_ip": mgmt, "platform": eff_plat, "site_id": site.get('id'), "config_path": cfgp}
+                        site.setdefault('devices', []).append(new_dev)
+                        dev_id_for_select = did
+                    else:
+                        eff_plat = plat or sel_man or (device or existing).get('platform')
+                        (device or existing).update({"id": did, "label": lbl, "mgmt_ip": mgmt, "platform": eff_plat, "config_path": cfgp})
+                        dev_id_for_select = did
+                    # Optionally infer mgmt IP from config if missing
+                    try:
+                        if (mgmt or '').strip() == '' and cfgp and os.path.exists(cfgp):
+                            with open(cfgp, 'r', errors='ignore') as f:
+                                txt = f.read()
+                            mgmt_ip = self._guess_mgmt_ip_from_config(txt)
+                            if mgmt_ip:
+                                if device is None:
+                                    site['devices'][-1]['mgmt_ip'] = mgmt_ip
+                                else:
+                                    device['mgmt_ip'] = mgmt_ip
+                    except Exception:
+                        pass
+                    try:
+                        self.save_sites()
+                    except Exception:
+                        pass
+                    try:
+                        self._populate_devices_tree(site.get('id'))
+                        # Focus/select the device row
+                        try:
+                            self.devices_tree.selection_set(dev_id_for_select)
+                            self.devices_tree.focus(dev_id_for_select)
+                            self.devices_tree.see(dev_id_for_select)
+                        except Exception:
+                            pass
+                    except Exception:
+                        self._populate_sites_tree()
+                finally:
+                    try:
+                        win.destroy()
+                    except Exception:
+                        pass
+
+            ttk.Button(win, text="Save", command=on_save).grid(row=6, column=1, padx=8, pady=12, sticky='e')
+            ttk.Button(win, text="Cancel", command=lambda: win.destroy()).grid(row=6, column=2, padx=8, pady=12, sticky='w')
+        except Exception:
+            try:
+                messagebox.showerror("Device Editor Error", "Could not open the editor.")
+            except Exception:
+                pass
 
     def _init_db(self):
         """Initialize the SQLite database to cache AI-generated commands."""
@@ -5096,8 +6099,23 @@ class NetApp(ctk.CTk):
         except Exception:
             pass
         if profile_names:
-            self.profile_combo.set(profile_names[0])
-            self.load_selected_profile()
+            try:
+                self.profile_combo.set(profile_names[0])
+            except Exception:
+                pass
+            try:
+                self.load_selected_profile()
+            except Exception as e:
+                try:
+                    self.log_to_terminal(f"Profile load failed: {e}", "error")
+                except Exception:
+                    pass
+        else:
+            # Clear selection when no profiles remain
+            try:
+                self.profile_combo.set('')
+            except Exception:
+                pass
 
     # --- Profile snapshot helpers ---
     def _safe_profile_name(self, name: str) -> str:
@@ -5343,18 +6361,39 @@ class NetApp(ctk.CTk):
         profile_name = self.profile_combo.get()
         if not profile_name: return
         if messagebox.askyesno("Confirm", f"Are you sure you want to delete the profile '{profile_name}'?"):
-            if profile_name in self.profiles:
-                del self.profiles[profile_name]
-                with open(self.profiles_file, 'w') as f: json.dump(self.profiles, f, indent=4)
-                self.com_port_combo.set('')
-                for entry in [self.user_entry, self.pass_entry, self.man_entry, self.model_entry, self.ver_entry, self.host_entry, self.port_entry]:
-                    entry.delete(0, tk.END)
+            try:
+                if profile_name in self.profiles:
+                    del self.profiles[profile_name]
+                    with open(self.profiles_file, 'w') as f:
+                        json.dump(self.profiles, f, indent=4)
+                    try:
+                        self.com_port_combo.set('')
+                    except Exception:
+                        pass
+                    for entry in [getattr(self, 'user_entry', None), getattr(self, 'pass_entry', None), getattr(self, 'man_entry', None), getattr(self, 'model_entry', None), getattr(self, 'ver_entry', None), getattr(self, 'host_entry', None), getattr(self, 'port_entry', None)]:
+                        try:
+                            if entry:
+                                entry.delete(0, tk.END)
+                        except Exception:
+                            pass
+                    try:
+                        if hasattr(self, 'conn_type_var') and self.conn_type_var:
+                            self.conn_type_var.set('Serial')
+                    except Exception:
+                        pass
+                    try:
+                        self.update_profile_list()
+                    except Exception:
+                        pass
+                    try:
+                        self.update_status(f"Deleted profile: {profile_name}")
+                    except Exception:
+                        pass
+            except Exception as e:
                 try:
-                    self.conn_type_var.set('Serial')
+                    messagebox.showerror("Delete Profile Error", f"Failed to delete profile: {e}")
                 except Exception:
                     pass
-                self.update_profile_list()
-                self.update_status(f"Deleted profile: {profile_name}")
 
     def enter_enable_mode(self):
         if not self.connection or not getattr(self, "is_connected", False):

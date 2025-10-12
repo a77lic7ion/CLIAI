@@ -1289,7 +1289,7 @@ class NetApp(ctk.CTk):
         except Exception:
             pass
         # Canvas background (set to white per request)
-        self.topology_canvas = tk.Canvas(container, bg="#ffffff")
+        self.topology_canvas = tk.Canvas(container, bg="#000000")
         self.topology_canvas.pack(fill="both", expand=True, padx=8, pady=6)
         # Interaction bindings
         self.topology_canvas.bind('<ButtonPress-1>', self._topology_on_press)
@@ -1757,27 +1757,290 @@ class NetApp(ctk.CTk):
                 self._add_topo_edge(e.get('tail'), e.get('head'), e.get('label') or '')
         self._redraw_edges()
 
-    def _add_topo_node(self, node_id, label, x, y, w=140, h=60, image_path=None):
-        # Rounded rectangle approximation via create_rectangle
-        rect = self.topology_canvas.create_rectangle(x, y, x+w, y+h, fill="#2b2b2b", outline="#3f3f3f", width=2)
-        # Optional device icon (drawn above the label)
-        image_item = None
-        if image_path and Image and ImageTk and os.path.exists(image_path):
-            try:
-                img = Image.open(image_path)
-                img = img.resize((48, 48), Image.LANCZOS)
-                if not hasattr(self, '_photo_refs'):
-                    self._photo_refs = {}
-                photo = ImageTk.PhotoImage(img)
-                self._photo_refs[node_id] = photo
-                image_item = self.topology_canvas.create_image(x + w/2, y + 24, image=photo)
-            except Exception:
-                image_item = None
-        # Label text (placed near bottom if icon exists)
-        ty = (y + h - 14) if image_item else (y + h/2)
-        text = self.topology_canvas.create_text(x+w/2, ty, text=label, fill="#e6e6e6", font=("Helvetica", 11))
-        handle = self.topology_canvas.create_rectangle(x+w-10, y+h-10, x+w, y+h, fill="#4fa3ff", outline="", width=0)
-        self.topo_nodes[node_id] = {"rect": rect, "text": text, "handle": handle, "image": image_item, "x": x, "y": y, "w": w, "h": h, "label": label, "image_path": image_path}
+    def _add_topo_node(self, node_id, label, x, y, w=340, h=180, image_path=None):
+        # Card-style device node with editable headline, subheader, model, and ports area
+        # Base card
+        card = self.topology_canvas.create_rectangle(x, y, x+w, y+h, fill="#0f131a", outline="#1f2937", width=2, tags=(f"node:{node_id}",))
+        header_h = 40
+        header = self.topology_canvas.create_rectangle(x, y, x+w, y+header_h, fill="#111827", outline="#111827", tags=(f"node:{node_id}",))
+        # Left status dot
+        status_dot = self.topology_canvas.create_oval(x-4, y+header_h/2-4, x+4, y+header_h/2+4, fill="#22c55e", outline="", tags=(f"node:{node_id}",))
+        # Title and subheader
+        title = self.topology_canvas.create_text(x+12, y+header_h/2, text=label, fill="#e5e7eb", font=("Helvetica", 13, "bold"), anchor="w", tags=(f"node:{node_id}",))
+        sub = self.topology_canvas.create_text(x+12, y+header_h+18, text="empty", fill="#9ca3af", font=("Helvetica", 10, "italic"), anchor="w", tags=(f"node:{node_id}",))
+        # Right header icons (cloud + warning)
+        warn = self.topology_canvas.create_oval(x+w-22, y+6, x+w-6, y+22, fill="#ef4444", outline="", tags=(f"node:{node_id}",))
+        warn_text = self.topology_canvas.create_text(x+w-14, y+14, text="!", fill="#ffffff", font=("Helvetica", 10, "bold"), tags=(f"node:{node_id}",))
+        cloud = self.topology_canvas.create_oval(x+w-44, y+6, x+w-28, y+22, fill="#374151", outline="", tags=(f"node:{node_id}",))
+        cloud_text = self.topology_canvas.create_text(x+w-36, y+14, text="☁", fill="#e5e7eb", font=("Helvetica", 10), tags=(f"node:{node_id}",))
+
+        # Model line
+        model_label = self.topology_canvas.create_text(x+12, y+header_h+36, text="MODEL:", fill="#9ca3af", font=("Helvetica", 10, "bold"), anchor="w", tags=(f"node:{node_id}",))
+        model_text = self.topology_canvas.create_text(x+76, y+header_h+36, text="GENERIC ROUTER", fill="#cbd5e1", font=("Helvetica", 10), anchor="w", tags=(f"node:{node_id}",))
+
+        # Ports area container
+        ports_top = y + header_h + 52
+        ports_bottom = y + h - 44
+        ports_area = self.topology_canvas.create_rectangle(x+8, ports_top, x+w-8, ports_bottom, fill="#0b0f16", outline="#1f2937", tags=(f"node:{node_id}",))
+
+        # Initial port list in memory
+        if not hasattr(self, 'topology_meta'):
+            self.topology_meta = {}
+        meta = self.topology_meta.setdefault(node_id, {
+            "model": "GENERIC ROUTER",
+            "ports": [
+                {"id": f"{node_id}-p1", "name": "WAN Port", "mode": "trunk", "vlan": "LAN-MGMNT", "link": "fiber"},
+                {"id": f"{node_id}-p2", "name": "New Port", "mode": None, "vlan": None, "link": "ethernet"},
+            ],
+        })
+
+        # Draw ports
+        port_items = []
+        row_h = 28
+        row_y = ports_top + 6
+        for p in meta["ports"]:
+            ry1 = row_y
+            ry2 = ry1 + (row_h - 6)
+            row_bg = self.topology_canvas.create_rectangle(x+12, ry1, x+w-12, ry2, fill="#0f172a", outline="#1f2937", tags=(f"node:{node_id}", f"portrow:{node_id}:{p['id']}"))
+            # Left connector chevron + handle
+            left_handle = self.topology_canvas.create_oval(x+14, ry1+6, x+20, ry1+12, fill="#4f46e5", outline="", tags=(f"node:{node_id}",))
+            chevron = self.topology_canvas.create_text(x+24, ry1+9, text="›", fill="#6b7280", font=("Helvetica", 10), tags=(f"node:{node_id}",))
+            # Link type badge
+            lt_text = 'F' if p.get('link') == 'fiber' else 'E'
+            lt_color = '#ea580c' if lt_text == 'F' else '#0891b2'
+            lt_badge = self.topology_canvas.create_oval(x+34, ry1+4, x+46, ry1+16, fill=lt_color, outline="", tags=(f"node:{node_id}",))
+            lt_label = self.topology_canvas.create_text(x+40, ry1+10, text=lt_text, fill="#ffffff", font=("Helvetica", 9, "bold"), tags=(f"node:{node_id}",))
+            # VLAN pill (if any)
+            vx = x+52
+            vlan_rect = None
+            vlan_text = None
+            if p.get('vlan'):
+                vlan_rect = self.topology_canvas.create_rectangle(vx, ry1+4, vx+78, ry1+18, fill="#22c55e", outline="", tags=(f"node:{node_id}",))
+                vlan_text = self.topology_canvas.create_text(vx+39, ry1+11, text=p['vlan'], fill="#ffffff", font=("Helvetica", 9, "bold"), tags=(f"node:{node_id}",))
+                name_x = vx + 90
+            else:
+                name_x = vx
+            # Port name (editable on double-click)
+            name_text = self.topology_canvas.create_text(name_x, ry1+10, text=p['name'], fill="#cbd5e1", font=("Helvetica", 10), anchor="w", tags=(f"node:{node_id}", f"portname:{node_id}:{p['id']}"))
+            # Mode badge
+            mode_text = (p.get('mode') or '?')
+            mode_color = '#2563eb' if mode_text == 'T' or p.get('mode') == 'trunk' else ('#16a34a' if p.get('mode') == 'access' else '#6b7280')
+            mode_badge = self.topology_canvas.create_oval(x+w-60, ry1+4, x+w-48, ry1+16, fill=mode_color, outline="", tags=(f"node:{node_id}", f"portmode:{node_id}:{p['id']}"))
+            mode_label = self.topology_canvas.create_text(x+w-54, ry1+10, text=('T' if p.get('mode')=='trunk' else ('A' if p.get('mode')=='access' else '?')), fill="#ffffff", font=("Helvetica", 9, "bold"), tags=(f"node:{node_id}",))
+            # Right connector handle
+            right_handle = self.topology_canvas.create_oval(x+w-24, ry1+6, x+w-18, ry1+12, fill="#4f46e5", outline="", tags=(f"node:{node_id}",))
+
+            port_items.append({
+                "row_bg": row_bg, "left_handle": left_handle, "chevron": chevron,
+                "lt_badge": lt_badge, "lt_label": lt_label, "vlan_rect": vlan_rect, "vlan_text": vlan_text,
+                "name_text": name_text, "mode_badge": mode_badge, "mode_label": mode_label, "right_handle": right_handle,
+                "id": p['id']
+            })
+            row_y += row_h
+
+        # Add Port dashed area
+        add_rect = self.topology_canvas.create_rectangle(x+12, ports_bottom-28, x+w-12, ports_bottom-8, outline="#6b7280", dash=(4,3), fill="", tags=(f"node:{node_id}", f"addport:{node_id}"))
+        add_text = self.topology_canvas.create_text(x+w/2, ports_bottom-18, text="+ Add Port", fill="#9ca3af", font=("Helvetica", 10), tags=(f"node:{node_id}",))
+
+        # Resize handle in card bottom-right
+        handle = self.topology_canvas.create_rectangle(x+w-14, y+h-14, x+w-4, y+h-4, fill="#374151", outline="", tags=(f"node:{node_id}",))
+
+        # Bind interactions
+        self.topology_canvas.tag_bind(f"addport:{node_id}", "<Button-1>", lambda e, nid=node_id: self._on_add_port_click(nid))
+        for p in port_items:
+            self.topology_canvas.tag_bind(f"portname:{node_id}:{p['id']}", "<Double-Button-1>", lambda e, nid=node_id, pid=p['id']: self._on_edit_port_name(nid, pid))
+            self.topology_canvas.tag_bind(f"portmode:{node_id}:{p['id']}", "<Button-1>", lambda e, nid=node_id, pid=p['id']: self._on_cycle_port_mode(nid, pid))
+
+        # Store node composite
+        self.topo_nodes[node_id] = {
+            "rect": card,
+            "handle": handle,
+            "text": title,
+            "image": None,
+            "x": x, "y": y, "w": w, "h": h, "label": label, "image_path": image_path,
+            "header": header, "status_dot": status_dot,
+            "sub": sub, "warn": warn, "warn_text": warn_text, "cloud": cloud, "cloud_text": cloud_text,
+            "model_label": model_label, "model_text": model_text,
+            "ports_area": ports_area, "port_items": port_items,
+            "add_rect": add_rect, "add_text": add_text
+        }
+
+        # Ensure layout is correct
+        self._update_node_layout(node_id)
+
+    def _update_node_layout(self, node_id):
+        n = self.topo_nodes.get(node_id)
+        if not n:
+            return
+        x, y, w, h = n['x'], n['y'], n['w'], n['h']
+        header_h = 40
+        ports_top = y + header_h + 52
+        ports_bottom = y + h - 44
+        # Base pieces
+        self.topology_canvas.coords(n['rect'], x, y, x+w, y+h)
+        self.topology_canvas.coords(n['header'], x, y, x+w, y+header_h)
+        self.topology_canvas.coords(n['status_dot'], x-4, y+header_h/2-4, x+4, y+header_h/2+4)
+        self.topology_canvas.coords(n['text'], x+12, y+header_h/2)
+        self.topology_canvas.coords(n['sub'], x+12, y+header_h+18)
+        self.topology_canvas.coords(n['warn'], x+w-22, y+6, x+w-6, y+22)
+        self.topology_canvas.coords(n['warn_text'], x+w-14, y+14)
+        self.topology_canvas.coords(n['cloud'], x+w-44, y+6, x+w-28, y+22)
+        self.topology_canvas.coords(n['cloud_text'], x+w-36, y+14)
+        self.topology_canvas.coords(n['model_label'], x+12, y+header_h+36)
+        self.topology_canvas.coords(n['model_text'], x+76, y+header_h+36)
+        self.topology_canvas.coords(n['ports_area'], x+8, ports_top, x+w-8, ports_bottom)
+
+        # Ports
+        row_h = 28
+        row_y = ports_top + 6
+        for p in n['port_items']:
+            ry1 = row_y
+            ry2 = ry1 + (row_h - 6)
+            self.topology_canvas.coords(p['row_bg'], x+12, ry1, x+w-12, ry2)
+            self.topology_canvas.coords(p['left_handle'], x+14, ry1+6, x+20, ry1+12)
+            self.topology_canvas.coords(p['chevron'], x+24, ry1+9)
+            self.topology_canvas.coords(p['lt_badge'], x+34, ry1+4, x+46, ry1+16)
+            self.topology_canvas.coords(p['lt_label'], x+40, ry1+10)
+            if p.get('vlan_rect'):
+                vx = x+52
+                self.topology_canvas.coords(p['vlan_rect'], vx, ry1+4, vx+78, ry1+18)
+                self.topology_canvas.coords(p['vlan_text'], vx+39, ry1+11)
+                name_x = vx + 90
+            else:
+                name_x = x+52
+            self.topology_canvas.coords(p['name_text'], name_x, ry1+10)
+            self.topology_canvas.coords(p['mode_badge'], x+w-60, ry1+4, x+w-48, ry1+16)
+            self.topology_canvas.coords(p['mode_label'], x+w-54, ry1+10)
+            self.topology_canvas.coords(p['right_handle'], x+w-24, ry1+6, x+w-18, ry1+12)
+            row_y += row_h
+
+        # Add Port area
+        self.topology_canvas.coords(n['add_rect'], x+12, ports_bottom-28, x+w-12, ports_bottom-8)
+        self.topology_canvas.coords(n['add_text'], x+w/2, ports_bottom-18)
+        # Resize handle
+        self.topology_canvas.coords(n['handle'], x+w-14, y+h-14, x+w-4, y+h-4)
+
+    def _on_add_port_click(self, node_id):
+        meta = getattr(self, 'topology_meta', {}).get(node_id)
+        if not meta:
+            return
+        new_id = f"{node_id}-p{len(meta['ports'])+1}"
+        meta['ports'].append({"id": new_id, "name": "New Port", "mode": None, "vlan": None, "link": "ethernet"})
+        # Recreate port rows quickly: remove old items and redraw
+        n = self.topo_nodes.get(node_id)
+        if not n:
+            return
+        for p in n['port_items']:
+            for key in ["row_bg","left_handle","chevron","lt_badge","lt_label","vlan_rect","vlan_text","name_text","mode_badge","mode_label","right_handle"]:
+                item = p.get(key)
+                if item:
+                    try:
+                        self.topology_canvas.delete(item)
+                    except Exception:
+                        pass
+        n['port_items'] = []
+
+        # Draw anew
+        x, y, w, h = n['x'], n['y'], n['w'], n['h']
+        header_h = 40
+        ports_top = y + header_h + 52
+        row_h = 28
+        row_y = ports_top + 6
+        for p in meta['ports']:
+            ry1 = row_y
+            ry2 = ry1 + (row_h - 6)
+            row_bg = self.topology_canvas.create_rectangle(x+12, ry1, x+w-12, ry2, fill="#0f172a", outline="#1f2937", tags=(f"node:{node_id}", f"portrow:{node_id}:{p['id']}"))
+            left_handle = self.topology_canvas.create_oval(x+14, ry1+6, x+20, ry1+12, fill="#4f46e5", outline="", tags=(f"node:{node_id}",))
+            chevron = self.topology_canvas.create_text(x+24, ry1+9, text="›", fill="#6b7280", font=("Helvetica", 10), tags=(f"node:{node_id}",))
+            lt_text = 'F' if p.get('link') == 'fiber' else 'E'
+            lt_color = '#ea580c' if lt_text == 'F' else '#0891b2'
+            lt_badge = self.topology_canvas.create_oval(x+34, ry1+4, x+46, ry1+16, fill=lt_color, outline="", tags=(f"node:{node_id}",))
+            lt_label = self.topology_canvas.create_text(x+40, ry1+10, text=lt_text, fill="#ffffff", font=("Helvetica", 9, "bold"), tags=(f"node:{node_id}",))
+            vx = x+52
+            vlan_rect = None
+            vlan_text = None
+            if p.get('vlan'):
+                vlan_rect = self.topology_canvas.create_rectangle(vx, ry1+4, vx+78, ry1+18, fill="#22c55e", outline="", tags=(f"node:{node_id}",))
+                vlan_text = self.topology_canvas.create_text(vx+39, ry1+11, text=p['vlan'], fill="#ffffff", font=("Helvetica", 9, "bold"), tags=(f"node:{node_id}",))
+                name_x = vx + 90
+            else:
+                name_x = vx
+            name_text = self.topology_canvas.create_text(name_x, ry1+10, text=p['name'], fill="#cbd5e1", font=("Helvetica", 10), anchor="w", tags=(f"node:{node_id}", f"portname:{node_id}:{p['id']}"))
+            mode_text = (p.get('mode') or '?')
+            mode_color = '#2563eb' if mode_text == 'T' or p.get('mode') == 'trunk' else ('#16a34a' if p.get('mode') == 'access' else '#6b7280')
+            mode_badge = self.topology_canvas.create_oval(x+w-60, ry1+4, x+w-48, ry1+16, fill=mode_color, outline="", tags=(f"node:{node_id}", f"portmode:{node_id}:{p['id']}"))
+            mode_label = self.topology_canvas.create_text(x+w-54, ry1+10, text=('T' if p.get('mode')=='trunk' else ('A' if p.get('mode')=='access' else '?')), fill="#ffffff", font=("Helvetica", 9, "bold"), tags=(f"node:{node_id}",))
+            right_handle = self.topology_canvas.create_oval(x+w-24, ry1+6, x+w-18, ry1+12, fill="#4f46e5", outline="", tags=(f"node:{node_id}",))
+
+            n['port_items'].append({
+                "row_bg": row_bg, "left_handle": left_handle, "chevron": chevron,
+                "lt_badge": lt_badge, "lt_label": lt_label, "vlan_rect": vlan_rect, "vlan_text": vlan_text,
+                "name_text": name_text, "mode_badge": mode_badge, "mode_label": mode_label, "right_handle": right_handle,
+                "id": p['id']
+            })
+            # Bind per-port interactions
+            self.topology_canvas.tag_bind(f"portname:{node_id}:{p['id']}", "<Double-Button-1>", lambda e, nid=node_id, pid=p['id']: self._on_edit_port_name(nid, pid))
+            self.topology_canvas.tag_bind(f"portmode:{node_id}:{p['id']}", "<Button-1>", lambda e, nid=node_id, pid=p['id']: self._on_cycle_port_mode(nid, pid))
+            row_y += row_h
+
+        # Update add area and handle
+        self._update_node_layout(node_id)
+
+    def _on_edit_port_name(self, node_id, port_id):
+        meta = getattr(self, 'topology_meta', {}).get(node_id)
+        if not meta:
+            return
+        for p in meta['ports']:
+            if p['id'] == port_id:
+                initial = p['name']
+                break
+        else:
+            return
+        new_name = simpledialog.askstring("Port Name", "Enter port name:", initialvalue=initial)
+        if new_name:
+            for p in meta['ports']:
+                if p['id'] == port_id:
+                    p['name'] = new_name
+                    break
+            # Refresh text on canvas
+            n = self.topo_nodes.get(node_id)
+            if not n:
+                return
+            for item in n['port_items']:
+                if item['id'] == port_id:
+                    self.topology_canvas.itemconfigure(item['name_text'], text=new_name)
+                    break
+
+    def _on_cycle_port_mode(self, node_id, port_id):
+        meta = getattr(self, 'topology_meta', {}).get(node_id)
+        if not meta:
+            return
+        current = None
+        for p in meta['ports']:
+            if p['id'] == port_id:
+                current = p.get('mode')
+                break
+        modes = [None, 'access', 'trunk']
+        try:
+            idx = modes.index(current)
+        except ValueError:
+            idx = 0
+        next_mode = modes[(idx + 1) % len(modes)]
+        for p in meta['ports']:
+            if p['id'] == port_id:
+                p['mode'] = next_mode
+                break
+        # Update badge appearance
+        n = self.topo_nodes.get(node_id)
+        if not n:
+            return
+        for item in n['port_items']:
+            if item['id'] == port_id:
+                label = 'A' if next_mode == 'access' else ('T' if next_mode == 'trunk' else '?')
+                color = '#16a34a' if next_mode == 'access' else ('#2563eb' if next_mode == 'trunk' else '#6b7280')
+                self.topology_canvas.itemconfigure(item['mode_label'], text=label)
+                self.topology_canvas.itemconfigure(item['mode_badge'], fill=color)
+                break
 
     def _add_topo_edge(self, tail, head, label=''):
         self.topo_edges.append((tail, head, label))
@@ -1795,7 +2058,7 @@ class NetApp(ctk.CTk):
                 y1 = tn['y'] + tn['h']/2
                 x2 = hn['x'] + hn['w']/2
                 y2 = hn['y'] + hn['h']/2
-                line = self.topology_canvas.create_line(x1, y1, x2, y2, fill="#8a8a8a", width=1.5, arrow=tk.LAST)
+                line = self.topology_canvas.create_line(x1, y1, x2, y2, fill="#56d67f", width=2, dash=(6,4))
                 self._edge_items.append(line)
                 # Place endpoint port labels close to the device touch points
                 if lbl:
@@ -2005,13 +2268,7 @@ class NetApp(ctk.CTk):
                 for nid2, n2 in self.topo_nodes.items():
                     n2['x'] += dx
                     n2['y'] += dy
-                    x2, y2, w2, h2 = n2['x'], n2['y'], n2['w'], n2['h']
-                    self.topology_canvas.coords(n2['rect'], x2, y2, x2+w2, y2+h2)
-                    ty2 = (y2 + h2 - 14) if n2.get('image') else (y2 + h2/2)
-                    self.topology_canvas.coords(n2['text'], x2+w2/2, ty2)
-                    self.topology_canvas.coords(n2['handle'], x2+w2-10, y2+h2-10, x2+w2, y2+h2)
-                    if n2.get('image'):
-                        self.topology_canvas.coords(n2['image'], x2 + w2/2, y2 + 24)
+                    self._update_node_layout(nid2)
                 self._redraw_edges()
             return
         n = self.topo_nodes[nid]
@@ -2029,14 +2286,8 @@ class NetApp(ctk.CTk):
                 x = self._snap_to_grid(x)
                 y = self._snap_to_grid(y)
             n['x'], n['y'] = x, y
-        # Update canvas items
-        x, y, w, h = n['x'], n['y'], n['w'], n['h']
-        self.topology_canvas.coords(n['rect'], x, y, x+w, y+h)
-        ty = (y + h - 14) if n.get('image') else (y + h/2)
-        self.topology_canvas.coords(n['text'], x+w/2, ty)
-        self.topology_canvas.coords(n['handle'], x+w-10, y+h-10, x+w, y+h)
-        if n.get('image'):
-            self.topology_canvas.coords(n['image'], x + w/2, y + 24)
+        # Update all composite items
+        self._update_node_layout(nid)
         self._redraw_edges()
 
     def _topology_on_release(self, event):

@@ -444,6 +444,11 @@ class NetApp(ctk.CTk):
 
         # --- Main Notebook (Tabbed UI) ---
         nb = ttk.Notebook(self)
+        try:
+            # Use dark custom style for the notebook for better contrast
+            nb.configure(style="Dark.TNotebook")
+        except Exception:
+            pass
         nb.pack(fill=tk.BOTH, expand=True)
         # Tabs
         sites_tab = ctk.CTkFrame(nb)
@@ -1032,10 +1037,17 @@ class NetApp(ctk.CTk):
         # ttk Progressbar dark styling
         try:
             style = ttk.Style()
-            # Base colors
-            style.configure("TNotebook", background=palette["bg"], bordercolor=palette["panel"]) 
-            style.configure("TNotebook.Tab", background=palette["panel"], foreground=palette["text"], padding=(10,6)) 
-            style.map("TNotebook.Tab", background=[("selected", "#2b2b2b"), ("active", "#2a2a2a")], foreground=[("selected", palette["text"])])
+            # Ensure a theme that allows color customization
+            try:
+                style.theme_use('clam')
+            except Exception:
+                pass
+            # Base colors (custom dark style)
+            style.configure("Dark.TNotebook", background=palette["bg"], bordercolor=palette["panel"])
+            style.configure("Dark.TNotebook.Tab", background="#242424", foreground=palette["text"], padding=(12,8), font=("Helvetica", 11, "bold"))
+            style.map("Dark.TNotebook.Tab",
+                       background=[("selected", "#3a3a3a"), ("active", "#303030")],
+                       foreground=[("selected", "#ffffff")])
             style.configure(
                 "Horizontal.TProgressbar",
                 troughcolor=palette["panel"],
@@ -1154,17 +1166,45 @@ class NetApp(ctk.CTk):
         self._drag_state = {"node": None, "dx": 0, "dy": 0, "resizing": False}
 
     def generate_topology_layout(self):
-        # Generate from selected site devices (fallback to placeholder)
+        # Generate from selected site devices, deriving connections from saved configs
         nodes = []
         edges = []
         try:
             site = next((s for s in self.sites if s.get('id') == self.selected_site_id), None)
             if site:
+                device_map_name = {}
+                device_map_ip = {}
                 for d in site.get('devices', []):
                     nid = d.get('id') or d.get('label') or d.get('mgmt_ip') or f"node_{len(nodes)+1}"
-                    label = d.get('label') or d.get('mgmt_ip') or nid
+                    disp_label = d.get('label') or nid
+                    ip = d.get('mgmt_ip') or ''
+                    label = disp_label if not ip else f"{disp_label}\n{ip}"
                     nodes.append({"id": nid, "label": label})
-                # Optional: parse edges from saved configs in profiles (LLDP/CDP) – placeholder, none by default
+                    if disp_label:
+                        device_map_name[disp_label.strip()] = nid
+                    if ip:
+                        device_map_ip[ip.strip()] = nid
+                # Parse edges by reading attached configs
+                for d in site.get('devices', []):
+                    nid = d.get('id') or d.get('label') or d.get('mgmt_ip')
+                    cfg_path = d.get('config_path')
+                    if cfg_path and os.path.exists(cfg_path):
+                        try:
+                            with open(cfg_path, 'r', errors='ignore') as f:
+                                txt = f.read()
+                            neigh = self._parse_neighbors_from_config(txt)
+                            # Match by name
+                            for nm in neigh.get('names', []):
+                                tgt = device_map_name.get(nm.strip())
+                                if tgt and tgt != nid:
+                                    edges.append((nid, tgt))
+                            # Match by IP
+                            for nip in neigh.get('ips', []):
+                                tgt = device_map_ip.get(nip.strip())
+                                if tgt and tgt != nid:
+                                    edges.append((nid, tgt))
+                        except Exception:
+                            pass
             else:
                 nodes = [
                     {"id": "A", "label": self.host_entry.get() or "DeviceA"},
@@ -1174,7 +1214,52 @@ class NetApp(ctk.CTk):
                 edges = [("A", "B"), ("B", "C")]
         except Exception:
             pass
+        # Deduplicate edges
+        try:
+            uniq = set()
+            dedup = []
+            for a,b in edges:
+                key = (a,b)
+                if key not in uniq:
+                    uniq.add(key)
+                    dedup.append((a,b))
+            edges = dedup
+        except Exception:
+            pass
         self._layout_nodes_with_graphviz(nodes, edges)
+
+    def _parse_neighbors_from_config(self, cfg_text: str):
+        names = set()
+        ips = set()
+        try:
+            # Cisco CDP
+            for m in re.finditer(r"Device ID\s*:\s*([^\r\n]+)", cfg_text, flags=re.IGNORECASE):
+                names.add(m.group(1).strip())
+            for m in re.finditer(r"IP (?:address|Address)\s*[: ]\s*((?:\d{1,3}\.){3}\d{1,3})", cfg_text, flags=re.IGNORECASE):
+                ips.add(m.group(1).strip())
+            # LLDP common
+            for m in re.finditer(r"System Name\s*[: ]\s*([^\r\n]+)", cfg_text, flags=re.IGNORECASE):
+                names.add(m.group(1).strip())
+            for m in re.finditer(r"Management Address\s*[: ]\s*((?:\d{1,3}\.){3}\d{1,3})", cfg_text, flags=re.IGNORECASE):
+                ips.add(m.group(1).strip())
+            # H3C/Huawei style
+            for m in re.finditer(r"neighbor system name\s*[: ]\s*([^\r\n]+)", cfg_text, flags=re.IGNORECASE):
+                names.add(m.group(1).strip())
+        except Exception:
+            pass
+        return {"names": list(names), "ips": list(ips)}
+
+    def _guess_mgmt_ip_from_config(self, cfg_text: str):
+        try:
+            m = re.search(r"Management Address\s*[: ]\s*((?:\d{1,3}\.){3}\d{1,3})", cfg_text, flags=re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+            m = re.search(r"\b((?:\d{1,3}\.){3}\d{1,3})\b", cfg_text)
+            if m:
+                return m.group(1).strip()
+        except Exception:
+            pass
+        return None
 
     def _layout_nodes_with_graphviz(self, nodes, edges):
         try:
@@ -1340,17 +1425,40 @@ class NetApp(ctk.CTk):
         ctk.CTkLabel(toolbar, text="Sites & Devices", font=("Helvetica", 12, "bold")).pack(side=tk.LEFT)
         ctk.CTkButton(toolbar, text="Add Site", command=self._add_site).pack(side=tk.LEFT, padx=6)
         ctk.CTkButton(toolbar, text="Add Device", command=self._add_device).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(toolbar, text="Attach Config", command=self._attach_device_config).pack(side=tk.LEFT, padx=6)
         ctk.CTkButton(toolbar, text="Delete", command=self._delete_site_or_device).pack(side=tk.LEFT, padx=6)
         ctk.CTkButton(toolbar, text="Save", command=self.save_sites).pack(side=tk.LEFT, padx=6)
-        # Tree: sites as roots, devices as children
-        self.sites_tree = ttk.Treeview(container, columns=("label","mgmt_ip","platform"), show='tree headings', style="DarkTreeview")
-        self.sites_tree.heading('#0', text='ID')
-        self.sites_tree.heading('label', text='Label')
-        self.sites_tree.heading('mgmt_ip', text='Mgmt IP')
-        self.sites_tree.heading('platform', text='Platform')
-        self.sites_tree.pack(fill="both", expand=True, padx=8, pady=6)
+
+        # Split into two panes: left sites, right devices in selected site
+        paned = ttk.Panedwindow(container, orient=tk.HORIZONTAL)
+        paned.pack(fill="both", expand=True, padx=8, pady=6)
+
+        left = ctk.CTkFrame(paned)
+        right = ctk.CTkFrame(paned)
+        paned.add(left, weight=1)
+        paned.add(right, weight=2)
+
+        # Left: sites list
+        ctk.CTkLabel(left, text="Sites", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=8, pady=(6,2))
+        self.sites_list = ttk.Treeview(left, columns=("name",), show='tree headings', style="DarkTreeview", height=12)
+        self.sites_list.heading('#0', text='ID')
+        self.sites_list.heading('name', text='Name')
+        self.sites_list.pack(fill="both", expand=True, padx=8, pady=6)
+        self.sites_list.bind('<<TreeviewSelect>>', self._on_site_list_select)
+
+        # Right: devices for selected site
+        ctk.CTkLabel(right, text="Devices", font=("Helvetica", 11, "bold")).pack(anchor="w", padx=8, pady=(6,2))
+        self.devices_tree = ttk.Treeview(right, columns=("label","mgmt_ip","platform","config"), show='tree headings', style="DarkTreeview")
+        self.devices_tree.heading('#0', text='ID')
+        self.devices_tree.heading('label', text='Label')
+        self.devices_tree.heading('mgmt_ip', text='Mgmt IP')
+        self.devices_tree.heading('platform', text='Platform')
+        self.devices_tree.heading('config', text='Config')
+        self.devices_tree.pack(fill="both", expand=True, padx=8, pady=6)
+        self.devices_tree.bind('<<TreeviewSelect>>', self._on_devices_tree_select)
+
+        # Populate initial data
         self._populate_sites_tree()
-        self.sites_tree.bind('<<TreeviewSelect>>', self._on_sites_tree_select)
 
     def _build_settings_tab(self, parent):
         container = ctk.CTkFrame(parent)
@@ -1429,28 +1537,58 @@ class NetApp(ctk.CTk):
             pass
 
     def _populate_sites_tree(self):
+        # Populate left sites list
         try:
-            for item in self.sites_tree.get_children():
-                self.sites_tree.delete(item)
+            for item in self.sites_list.get_children():
+                self.sites_list.delete(item)
         except Exception:
             pass
         for s in self.sites:
             sid = s.get('id') or f"site_{id(s)}"
-            lbl = s.get('name') or sid
-            parent_id = self.sites_tree.insert('', 'end', iid=sid, text=sid, values=(lbl, '', ''))
-            for d in s.get('devices', []):
-                did = d.get('id') or f"dev_{id(d)}"
-                self.sites_tree.insert(parent_id, 'end', iid=f"{sid}:{did}", text=did, values=(d.get('label',''), d.get('mgmt_ip',''), d.get('platform','')))
+            name = s.get('name') or sid
+            self.sites_list.insert('', 'end', iid=sid, text=sid, values=(name,))
+        # Populate devices for currently selected site
+        try:
+            if getattr(self, 'selected_site_id', None):
+                self._populate_devices_tree(self.selected_site_id)
+        except Exception:
+            pass
 
-    def _on_sites_tree_select(self, event=None):
-        sel = self.sites_tree.selection()
-        if not sel:
+    def _populate_devices_tree(self, site_id):
+        try:
+            for item in self.devices_tree.get_children():
+                self.devices_tree.delete(item)
+        except Exception:
+            pass
+        site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == site_id), None)
+        if not site:
             return
-        iid = sel[0]
-        if ':' in iid:
-            # device
-            sid, did = iid.split(':', 1)
-            self.selected_site_id = sid
+        for d in site.get('devices', []):
+            did = d.get('id') or f"dev_{id(d)}"
+            cfg = d.get('config_path', '')
+            try:
+                cfg = os.path.basename(cfg) if cfg else ''
+            except Exception:
+                pass
+            self.devices_tree.insert('', 'end', iid=did, text=did, values=(d.get('label',''), d.get('mgmt_ip',''), d.get('platform',''), cfg))
+
+    def _on_site_list_select(self, event=None):
+        try:
+            sel = self.sites_list.selection()
+            if not sel:
+                return
+            self.selected_site_id = sel[0]
+            self._populate_devices_tree(self.selected_site_id)
+        except Exception:
+            pass
+
+    def _on_devices_tree_select(self, event=None):
+        try:
+            sel = self.devices_tree.selection()
+            if not sel:
+                return
+            did = sel[0]
+            sid = self.selected_site_id
             site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == sid), None)
             if not site:
                 return
@@ -1470,9 +1608,18 @@ class NetApp(ctk.CTk):
                         pass
             except Exception:
                 pass
-        else:
-            # site
-            self.selected_site_id = iid
+        except Exception:
+            pass
+
+    def _on_sites_tree_select(self, event=None):
+        # Backwards-compat handler not used; replaced by _on_site_list_select and _on_devices_tree_select
+        sel = getattr(self, 'sites_list', None).selection() if hasattr(self, 'sites_list') else []
+        if sel:
+            self.selected_site_id = sel[0]
+            try:
+                self._populate_devices_tree(self.selected_site_id)
+            except Exception:
+                pass
 
     def _add_site(self):
         sid = simpledialog.askstring("Add Site", "Enter site ID:")
@@ -1496,21 +1643,84 @@ class NetApp(ctk.CTk):
             site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == self.selected_site_id), None)
         if not site:
             return
-        site.setdefault('devices', []).append({"id": did or f"dev_{len(site.get('devices', []))+1}", "label": label or did or mgmt, "mgmt_ip": mgmt or '', "platform": platform or '' , "site_id": site.get('id')})
-        self._populate_sites_tree()
+        site.setdefault('devices', []).append({"id": did or f"dev_{len(site.get('devices', []))+1}", "label": label or did or mgmt, "mgmt_ip": mgmt or '', "platform": platform or '' , "site_id": site.get('id'), "config_path": ''})
+        try:
+            self._populate_devices_tree(site.get('id') or self.selected_site_id)
+        except Exception:
+            self._populate_sites_tree()
+
+    def _attach_device_config(self):
+        try:
+            # Use selection from right devices pane
+            dev_sel = []
+            try:
+                dev_sel = self.devices_tree.selection()
+            except Exception:
+                pass
+            if not dev_sel:
+                messagebox.showinfo("Select Device", "Select a device in the right-pane Devices table.")
+                return
+            did = dev_sel[0]
+            sid = self.selected_site_id
+            site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == sid), None)
+            if not site:
+                return
+            dev = next((d for d in site.get('devices', []) if (d.get('id') or f"dev_{id(d)}") == did), None)
+            if not dev:
+                return
+            path = filedialog.askopenfilename(title="Select device config", filetypes=[("Text files","*.txt"), ("Config files","*.cfg"), ("All files","*.*")])
+            if not path:
+                return
+            dev['config_path'] = path
+            # Optionally, try to extract candidate mgmt IP if missing
+            try:
+                if not dev.get('mgmt_ip') and os.path.exists(path):
+                    with open(path, 'r', errors='ignore') as f:
+                        txt = f.read()
+                    mgmt_ip = self._guess_mgmt_ip_from_config(txt)
+                    if mgmt_ip:
+                        dev['mgmt_ip'] = mgmt_ip
+            except Exception:
+                pass
+            self.save_sites()
+            try:
+                self._populate_devices_tree(sid)
+            except Exception:
+                self._populate_sites_tree()
+        except Exception as e:
+            try:
+                messagebox.showerror("Attach Config Error", str(e))
+            except Exception:
+                pass
 
     def _delete_site_or_device(self):
-        sel = self.sites_tree.selection()
-        if not sel:
-            return
-        iid = sel[0]
-        if ':' in iid:
-            sid, did = iid.split(':', 1)
+        # If a device is selected in right pane, delete it; else delete selected site
+        try:
+            dev_sel = self.devices_tree.selection()
+        except Exception:
+            dev_sel = []
+        if dev_sel:
+            did = dev_sel[0]
+            sid = self.selected_site_id
             site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == sid), None)
             if site:
                 site['devices'] = [d for d in site.get('devices', []) if (d.get('id') or f"dev_{id(d)}") != did]
-        else:
-            self.sites = [s for s in self.sites if (s.get('id') or f"site_{id(s)}") != iid]
+            try:
+                self._populate_devices_tree(sid)
+            except Exception:
+                self._populate_sites_tree()
+            return
+        # Else delete site
+        sel = []
+        try:
+            sel = self.sites_list.selection()
+        except Exception:
+            pass
+        if not sel:
+            return
+        iid = sel[0]
+        self.sites = [s for s in self.sites if (s.get('id') or f"site_{id(s)}") != iid]
+        self.selected_site_id = None
         self._populate_sites_tree()
 
     def _init_db(self):
@@ -4705,25 +4915,126 @@ class NetApp(ctk.CTk):
         self.update_status("Command push finished or was halted by an error.")
 
     def log_to_terminal(self, message, tag=None):
-        self.terminal.tag_config("info", foreground="cyan")
-        self.terminal.tag_config("error", foreground="red")
-        self.terminal.tag_config("command", foreground="yellow")
-        self.terminal.tag_config("prompt", foreground="lime green")
+        # Ensure base tags exist
+        try:
+            self.terminal.tag_config("info", foreground="cyan")
+            self.terminal.tag_config("error", foreground="red")
+            self.terminal.tag_config("command", foreground="yellow")
+            self.terminal.tag_config("prompt", foreground="lime green")
+        except Exception:
+            pass
 
         # Ensure device/log output appears ABOVE the current prompt/input line
         insert_index = tk.END
         try:
             if hasattr(self.terminal, 'mark_set'):
-                # Insert before prompt mark if it exists
                 try:
                     insert_index = self.terminal.index('PROMPT')
                 except Exception:
                     insert_index = tk.END
         except Exception:
             insert_index = tk.END
-        self.terminal.insert(insert_index, message + "\n", tag)
-        self.terminal.see(tk.END)
-        self.update_idletasks()
+
+        # ANSI-aware insertion
+        try:
+            if "\x1b[" in message:
+                self._setup_ansi_tags()
+                self._insert_ansi_text(insert_index, message)
+                self.terminal.insert(tk.END, "\n")
+            else:
+                self.terminal.insert(insert_index, message + "\n", tag)
+        except Exception:
+            self.terminal.insert(insert_index, message + "\n", tag)
+        try:
+            self.terminal.see(tk.END)
+            self.update_idletasks()
+        except Exception:
+            pass
+
+    def _setup_ansi_tags(self):
+        try:
+            # Standard colors for dark background
+            self.terminal.tag_config("ansi_fg_black", foreground="#606060")
+            self.terminal.tag_config("ansi_fg_red", foreground="#ff5f5f")
+            self.terminal.tag_config("ansi_fg_green", foreground="#7ad67a")
+            self.terminal.tag_config("ansi_fg_yellow", foreground="#ffd866")
+            self.terminal.tag_config("ansi_fg_blue", foreground="#5fa8ff")
+            self.terminal.tag_config("ansi_fg_magenta", foreground="#c678dd")
+            self.terminal.tag_config("ansi_fg_cyan", foreground="#56b6c2")
+            self.terminal.tag_config("ansi_fg_white", foreground="#e6e6e6")
+            # Bright variants
+            self.terminal.tag_config("ansi_fg_bright_black", foreground="#808080")
+            self.terminal.tag_config("ansi_fg_bright_red", foreground="#ff7a7a")
+            self.terminal.tag_config("ansi_fg_bright_green", foreground="#98e698")
+            self.terminal.tag_config("ansi_fg_bright_yellow", foreground="#ffe599")
+            self.terminal.tag_config("ansi_fg_bright_blue", foreground="#7fbaff")
+            self.terminal.tag_config("ansi_fg_bright_magenta", foreground="#d69ef0")
+            self.terminal.tag_config("ansi_fg_bright_cyan", foreground="#7adfe0")
+            self.terminal.tag_config("ansi_fg_bright_white", foreground="#ffffff")
+            # Styles
+            self.terminal.tag_config("ansi_bold", font=("Consolas", getattr(self, 'terminal_font_size', 12), 'bold'))
+            self.terminal.tag_config("ansi_underline", underline=True)
+            self.terminal.tag_config("ansi_dim", foreground="#a0a0a0")
+        except Exception:
+            pass
+
+    def _insert_ansi_text(self, index, text):
+        # Minimal ANSI SGR parser: \x1b[<codes>m
+        try:
+            pattern = re.compile(r"\x1b\[([0-9;]*)m")
+            pos = 0
+            active_tags = []
+            for m in pattern.finditer(text):
+                seg = text[pos:m.start()]
+                if seg:
+                    try:
+                        if active_tags:
+                            self.terminal.insert(index, seg, *active_tags)
+                        else:
+                            self.terminal.insert(index, seg)
+                    except Exception:
+                        self.terminal.insert(index, seg)
+                codes = m.group(1).split(';') if m.group(1) else ['0']
+                # Update active tags
+                active_tags = self._apply_ansi_codes(active_tags, codes)
+                pos = m.end()
+            # Tail
+            tail = text[pos:]
+            if tail:
+                try:
+                    if active_tags:
+                        self.terminal.insert(index, tail, *active_tags)
+                    else:
+                        self.terminal.insert(index, tail)
+                except Exception:
+                    self.terminal.insert(index, tail)
+        except Exception:
+            self.terminal.insert(index, text)
+
+    def _apply_ansi_codes(self, current_tags, codes):
+        # Map SGR codes to our tag names
+        tag_map = {
+            '30': 'ansi_fg_black', '31': 'ansi_fg_red', '32': 'ansi_fg_green', '33': 'ansi_fg_yellow',
+            '34': 'ansi_fg_blue', '35': 'ansi_fg_magenta', '36': 'ansi_fg_cyan', '37': 'ansi_fg_white',
+            '90': 'ansi_fg_bright_black', '91': 'ansi_fg_bright_red', '92': 'ansi_fg_bright_green', '93': 'ansi_fg_bright_yellow',
+            '94': 'ansi_fg_bright_blue', '95': 'ansi_fg_bright_magenta', '96': 'ansi_fg_bright_cyan', '97': 'ansi_fg_bright_white',
+        }
+        styles = {'1': 'ansi_bold', '2': 'ansi_dim', '4': 'ansi_underline'}
+        # Remove color tags when 39 or 0 reset
+        new_tags = list(current_tags)
+        for c in codes:
+            if c in ('0', ''):
+                new_tags = []
+            elif c == '39':
+                new_tags = [t for t in new_tags if not t.startswith('ansi_fg_')]
+            elif c in tag_map:
+                # Replace any existing fg tag
+                new_tags = [t for t in new_tags if not t.startswith('ansi_fg_')]
+                new_tags.append(tag_map[c])
+            elif c in styles:
+                if styles[c] not in new_tags:
+                    new_tags.append(styles[c])
+        return new_tags
 
     def _persist_device_info_to_profile(self):
         """Persist manufacturer, model, and version to the active profile for memory."""

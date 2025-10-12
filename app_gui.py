@@ -12,6 +12,7 @@ import time
 import threading
 import queue
 import sqlite3
+import shutil
 try:
     import telnetlib
 except Exception:
@@ -44,6 +45,21 @@ try:
     import ollama
 except ImportError:
     ollama = None
+
+# Optional integrations
+try:
+    import graphviz as graphviz_lib
+except ImportError:
+    graphviz_lib = None
+try:
+    from PIL import Image, ImageTk
+except ImportError:
+    Image = None
+    ImageTk = None
+try:
+    from ttp import ttp
+except ImportError:
+    ttp = None
 
 # --- Netmiko device_type mapping ---
 MANUFACTURER_TO_DEVICE_TYPE = {
@@ -396,6 +412,10 @@ class NetApp(ctk.CTk):
         self.reader_running = False
         self.profiles = {}
         self.profiles_file = 'profiles.json'
+        # Sites inventory
+        self.sites = []
+        self.sites_file = 'sites.json'
+        self.selected_site_id = None
         # Folder for per-profile snapshots (e.g., CLI DB copies)
         try:
             self.profiles_root = os.path.join(os.getcwd(), 'profiles')
@@ -410,6 +430,11 @@ class NetApp(ctk.CTk):
         # Command history for terminal input
         self.command_history = []
         self.history_index = None
+        # Terminal options state
+        try:
+            self.auto_pager_var = tk.BooleanVar(value=True)
+        except Exception:
+            self.auto_pager_var = None
         # DB build control
         self.db_build_thread = None
         try:
@@ -417,8 +442,23 @@ class NetApp(ctk.CTk):
         except Exception:
             self.stop_db_build_event = None
 
-        # --- Main Content Frame ---
-        main_frame = ctk.CTkFrame(self)
+        # --- Main Notebook (Tabbed UI) ---
+        nb = ttk.Notebook(self)
+        nb.pack(fill=tk.BOTH, expand=True)
+        # Tabs
+        sites_tab = ctk.CTkFrame(nb)
+        term_assist_tab = ctk.CTkFrame(nb)
+        parsed_tab = ctk.CTkFrame(nb)
+        topology_tab = ctk.CTkFrame(nb)
+        settings_tab = ctk.CTkFrame(nb)
+        nb.add(sites_tab, text="Sites & Devices")
+        nb.add(term_assist_tab, text="Terminal")
+        nb.add(parsed_tab, text="Parsed Config")
+        nb.add(topology_tab, text="Topology")
+        nb.add(settings_tab, text="Settings")
+
+        # --- Main Content Frame (Terminal & Assistant) ---
+        main_frame = ctk.CTkFrame(term_assist_tab)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         main_pane = tk.PanedWindow(main_frame, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
@@ -436,10 +476,12 @@ class NetApp(ctk.CTk):
         except Exception:
             pass
 
+        # Left side holds connection and terminal; this also serves Sites & Devices
         left_frame = ctk.CTkFrame(main_pane)
         # Avoid forcing a fixed width; let the sash control the 60% ratio
         main_pane.add(left_frame, minsize=300)
 
+        # Connection controls also mirror into Sites & Devices tab
         conn_frame = ctk.CTkFrame(left_frame)
         conn_frame.pack(pady=6, padx=8, fill="x")
         ctk.CTkLabel(conn_frame, text="Connection", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=6, padx=5, pady=(6,4), sticky="w")
@@ -598,61 +640,7 @@ class NetApp(ctk.CTk):
         top_right_frame = ctk.CTkFrame(right_master_frame)
         top_right_frame.pack(fill="x", expand=False, pady=4, padx=5)
 
-        # AI Configuration (left; compact width)
-        ai_config_frame = ctk.CTkFrame(top_right_frame, width=280)
-        ai_config_frame.pack(side=tk.LEFT, fill="x", expand=False, padx=(0, 5))
-        ctk.CTkLabel(ai_config_frame, text="AI Configuration", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, padx=5, pady=(4,2), sticky="w")
-        
-        ctk.CTkLabel(ai_config_frame, text="Provider:").grid(row=1, column=0, padx=5, pady=3, sticky="w")
-        self.ai_provider_combo = ctk.CTkComboBox(ai_config_frame, values=["None", "Gemini", "OpenAI", "Mistral", "Claude", "Ollama", "Simulation"])
-        self.ai_provider_combo.grid(row=1, column=1, padx=5, pady=3, sticky="ew")
-        self.ai_provider_combo.set("Gemini")
-        try:
-            self.ai_provider_combo.configure(command=self.on_ai_provider_change)
-        except Exception:
-            pass
-        ctk.CTkLabel(ai_config_frame, text="API Key:").grid(row=2, column=0, padx=5, pady=3, sticky="w")
-        self.api_key_entry = ctk.CTkEntry(ai_config_frame, show="*")
-        self.api_key_entry.grid(row=2, column=1, padx=5, pady=3, sticky="ew")
-        ctk.CTkLabel(ai_config_frame, text="Ollama Model:").grid(row=3, column=0, padx=5, pady=3, sticky="w")
-        self.ollama_model_combo = ctk.CTkComboBox(ai_config_frame, state="disabled")
-        self.ollama_model_combo.grid(row=3, column=1, padx=5, pady=3, sticky="ew")
-        ctk.CTkLabel(ai_config_frame, text="Gemini Model:").grid(row=4, column=0, padx=5, pady=3, sticky="w")
-        self.gemini_model_combo = ctk.CTkComboBox(ai_config_frame, values=["1.5-flash", "2.0-flash", "1.5-pro"])
-        self.gemini_model_combo.grid(row=4, column=1, padx=5, pady=3, sticky="ew")
-        self.gemini_model_combo.set("2.0-flash")
-        # Buttons: Set provider and Check API Key
-        self.set_ai_btn = ctk.CTkButton(ai_config_frame, text="Set AI Provider", command=self.set_ai_provider)
-        self.set_ai_btn.grid(row=5, column=0, padx=5, pady=3, sticky="ew")
-        self.check_api_btn = ctk.CTkButton(ai_config_frame, text="Check API Key", command=self.check_api_key)
-        self.check_api_btn.grid(row=5, column=1, padx=5, pady=3, sticky="ew")
-        ai_config_frame.columnconfigure(1, weight=1)
-
-        # Terminal Options (center-left; compact width)
-        terminal_opts_frame = ctk.CTkFrame(top_right_frame, width=260)
-        terminal_opts_frame.pack(side=tk.LEFT, fill="x", expand=False, padx=(5, 0))
-        ctk.CTkLabel(terminal_opts_frame, text="Terminal Options", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=5, pady=(4,2))
-
-        ctk.CTkLabel(terminal_opts_frame, text="Wrap Mode:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
-        self.term_wrap_combo = ctk.CTkComboBox(terminal_opts_frame, values=["Wrap (word)", "No wrap"], width=140)
-        self.term_wrap_combo.set("Wrap (word)")
-        try:
-            self.term_wrap_combo.configure(command=self.on_term_wrap_change)
-        except Exception:
-            pass
-        self.term_wrap_combo.grid(row=1, column=1, sticky="w", padx=5, pady=2)
-        # Hide wrap controls; keep word-wrap as default
-        try:
-            for w in terminal_opts_frame.grid_slaves(row=1, column=0):
-                w.grid_remove()
-            self.term_wrap_combo.grid_remove()
-            # Ensure terminal uses word wrap by default
-            try:
-                self.terminal.configure(wrap='word')
-            except Exception:
-                pass
-        except Exception:
-            pass
+        # Settings: AI Configuration and Terminal Options moved to Settings tab
 
         # AI Assistant (center/right; give it most of top row width)
         ai_assist_top_frame = ctk.CTkFrame(top_right_frame)
@@ -711,34 +699,7 @@ class NetApp(ctk.CTk):
         self._add_tooltip(self.import_json_btn, "Import CLI")
         context_frame.columnconfigure(1, weight=1)
         context_frame.columnconfigure(2, weight=1)
-        font_frame = ctk.CTkFrame(terminal_opts_frame)
-        # Place font controls on their own row under the header
-        font_frame.grid(row=2, column=0, sticky="w", padx=5, pady=2)
-        # Replace segmented control with two simple buttons for reliable repeated clicks
-        ctk.CTkButton(font_frame, text="+", width=36, command=self.increase_terminal_font).pack(side=tk.LEFT, padx=2)
-        ctk.CTkButton(font_frame, text="-", width=36, command=self.decrease_terminal_font).pack(side=tk.LEFT, padx=2)
-        self.auto_pager_var = tk.BooleanVar(value=True)
-        # Stack Terminal Options buttons vertically for compact layout
-        # Keep fix_command_btn for references but hide it (compact layout)
-        self.fix_command_btn = ctk.CTkButton(terminal_opts_frame, text="Fix with AI", command=self.ai_fix_last_command, state=tk.DISABLED)
-        try:
-            self.fix_command_btn.grid_remove()
-        except Exception:
-            pass
-        clear_btn = ctk.CTkButton(terminal_opts_frame, text="🧹", command=self.clear_terminal)
-        clear_btn.grid(row=3, column=0, sticky="ew", padx=5, pady=3)
-        self._add_tooltip(clear_btn, "Clear Terminal")
-        export_btn = ctk.CTkButton(terminal_opts_frame, text="⤴", command=self.export_terminal_chat)
-        export_btn.grid(row=4, column=0, sticky="ew", padx=5, pady=3)
-        self._add_tooltip(export_btn, "Export…")
-        ctk.CTkCheckBox(terminal_opts_frame, text="Auto-pager", variable=self.auto_pager_var).grid(row=5, column=0, sticky="w", padx=5, pady=2)
-        next_btn = ctk.CTkButton(terminal_opts_frame, text="⏭", command=self.send_pager_next)
-        next_btn.grid(row=6, column=0, sticky="w", padx=5, pady=2)
-        self._add_tooltip(next_btn, "Next Page")
-        stop_btn = ctk.CTkButton(terminal_opts_frame, text="⏹", command=self.send_pager_stop)
-        stop_btn.grid(row=7, column=0, sticky="w", padx=5, pady=2)
-        self._add_tooltip(stop_btn, "Stop Paging")
-        # Remove Disable Paging (redundant with Auto-pager)
+        # Terminal Options moved to Settings tab
 
         # Apply requested defaults and initialize provider
         try:
@@ -933,8 +894,42 @@ class NetApp(ctk.CTk):
         
         # --- Busy Overlay (progress/thinking indicator) ---
         self._create_busy_overlay()
-        
+        # Apply visual refresh (fonts, dark palette, caret blink)
+        try:
+            self._apply_visual_theme()
+        except Exception:
+            pass
+
+        # Check optional external tools/libraries availability and report in status/terminal
+        try:
+            self._check_external_tools()
+        except Exception:
+            pass
+
+        # Load profiles and sites early
         self.load_profiles()
+        self.load_sites()
+        # Build Sites & Devices after loading
+        try:
+            self._build_sites_tab(sites_tab)
+        except Exception:
+            self.log_to_terminal("Failed to init Sites & Devices tab.", "error")
+
+        # --- Additional Tabs: Parsed Config & Topology ---
+        try:
+            self._build_parsed_config_tab(parsed_tab)
+        except Exception:
+            self.log_to_terminal("Failed to init Parsed Config tab.", "error")
+        try:
+            self._build_topology_tab(topology_tab)
+        except Exception:
+            self.log_to_terminal("Failed to init Topology tab.", "error")
+        try:
+            self._build_settings_tab(settings_tab)
+        except Exception:
+            self.log_to_terminal("Failed to init Settings tab.", "error")
+        
+        # Profiles already loaded above
         self.on_ai_provider_change()
         self.update_status("Ready")
         self._init_db()
@@ -975,6 +970,548 @@ class NetApp(ctk.CTk):
                 pass
         except Exception:
             pass
+
+    # --- Visual Theme Helpers ---
+    def _style_textbox(self, tb, font=("Helvetica", 12), bg="#101010", fg="#e6e6e6", caret="#c0c0c0"):
+        """Apply dark theme styling and caret blink to a CTkTextbox/Tk Text."""
+        try:
+            tb.configure(fg_color=bg, text_color=fg, font=font)
+        except Exception:
+            try:
+                tb.configure(background=bg, foreground=fg, font=font)
+            except Exception:
+                pass
+        try:
+            inner = getattr(tb, "_textbox", None) or getattr(tb, "textbox", None) or tb
+            inner.configure(insertbackground=caret)
+            # Blink caret and slightly thicker width for terminal feel
+            try:
+                inner.configure(insertontime=600, insertofftime=300, insertwidth=2)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _apply_visual_theme(self):
+        """Set iTerm-like dark palette and Helvetica font across key widgets."""
+        palette = {
+            "bg": "#191919",
+            "panel": "#222222",
+            "text": "#e6e6e6",
+            "muted": "#b8b8b8",
+            "accent": "#4fa3ff",
+        }
+        # Global dark mode (if CTk available)
+        try:
+            ctk.set_appearance_mode("Dark")
+        except Exception:
+            pass
+        # Root background
+        try:
+            self.configure(fg_color=palette["bg"])  # CTk root window
+        except Exception:
+            pass
+        # Primary text areas
+        for tb_name in [
+            "terminal",
+            "ai_output",
+            "chat_log",
+            "running_config_text",
+            "available_commands_text",
+            "other_config_text",
+        ]:
+            tb = getattr(self, tb_name, None)
+            if tb is not None:
+                self._style_textbox(tb, font=("Helvetica", 12), bg="#101010", fg=palette["text"]) 
+        # Status bar and frame
+        try:
+            self.status_frame.configure(fg_color=palette["panel"])
+            self.status_bar.configure(font=("Helvetica", 11), text_color=palette["muted"])
+        except Exception:
+            pass
+        # ttk Progressbar dark styling
+        try:
+            style = ttk.Style()
+            # Base colors
+            style.configure("TNotebook", background=palette["bg"], bordercolor=palette["panel"]) 
+            style.configure("TNotebook.Tab", background=palette["panel"], foreground=palette["text"], padding=(10,6)) 
+            style.map("TNotebook.Tab", background=[("selected", "#2b2b2b"), ("active", "#2a2a2a")], foreground=[("selected", palette["text"])])
+            style.configure(
+                "Horizontal.TProgressbar",
+                troughcolor=palette["panel"],
+                background=palette["accent"],
+                bordercolor=palette["panel"],
+            )
+            # Dark Treeview style for readability
+            style.configure(
+                "DarkTreeview",
+                background=palette["bg"],
+                foreground=palette["text"],
+                fieldbackground=palette["bg"],
+                bordercolor=palette["panel"],
+            )
+            style.map("DarkTreeview", background=[("selected", "#334e68")], foreground=[("selected", "#ffffff")])
+            style.configure("DarkTreeview.Heading", background=palette["panel"], foreground=palette["text"]) 
+        except Exception:
+            pass
+
+    # --- External Tools / Integrations ---
+    def _check_external_tools(self):
+        msgs = []
+        if graphviz_lib is None:
+            msgs.append("Graphviz python package not installed; install 'graphviz'.")
+        else:
+            dot_path = shutil.which('dot')
+            if not dot_path:
+                msgs.append("Graphviz 'dot' not found in PATH; install Graphviz desktop and add to PATH.")
+        if Image is None:
+            msgs.append("Pillow not installed; install 'pillow' for image handling.")
+        if ConnectHandler is None:
+            msgs.append("netmiko not installed; device connections may be unavailable.")
+        if not hasattr(serial, 'Serial'):
+            msgs.append("pyserial not installed; serial features may be unavailable.")
+        if ttp is None:
+            msgs.append("ttp not installed; template-based parsing unavailable.")
+        if msgs:
+            for m in msgs:
+                self.log_to_terminal(m, "info")
+        else:
+            self.log_to_terminal("Optional integrations ready: Graphviz, Pillow, Netmiko, PySerial, TTP.", "info")
+
+    def render_graphviz_image(self, dot_source: str):
+        """Render DOT source to a PIL Image using Graphviz. Returns (image, path) or (None, None)."""
+        try:
+            if graphviz_lib is None or Image is None:
+                return None, None
+            src = graphviz_lib.Source(dot_source)
+            out_path = src.render(format='png', cleanup=True)
+            img = Image.open(out_path)
+            return img, out_path
+        except Exception:
+            return None, None
+
+    # --- Parsed Config Tab ---
+    def _build_parsed_config_tab(self, parent):
+        container = ctk.CTkFrame(parent)
+        container.pack(fill="both", expand=True, padx=8, pady=6)
+        try:
+            container.grid_rowconfigure(1, weight=1)
+            container.grid_columnconfigure(0, weight=1)
+            container.grid_columnconfigure(1, weight=1)
+        except Exception:
+            pass
+        ctk.CTkLabel(container, text="Parsed Config", font=("Helvetica", 12, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(4,2))
+        self.parsed_input = ctk.CTkTextbox(container)
+        self.parsed_input.grid(row=1, column=0, sticky="nsew", padx=(8,4), pady=6)
+        self.parsed_output = ctk.CTkTextbox(container)
+        self.parsed_output.grid(row=1, column=1, sticky="nsew", padx=(4,8), pady=6)
+        actions = ctk.CTkFrame(container)
+        actions.grid(row=2, column=0, columnspan=2, sticky="ew", padx=8, pady=(0,8))
+        ctk.CTkButton(actions, text="Parse", command=self.parse_config_input).pack(side=tk.LEFT, padx=4)
+        ctk.CTkButton(actions, text="Clear", command=lambda: (self.parsed_input.delete('1.0', tk.END), self.parsed_output.delete('1.0', tk.END))).pack(side=tk.LEFT, padx=4)
+        # Style
+        self._style_textbox(self.parsed_input)
+        self._style_textbox(self.parsed_output)
+
+    def parse_config_input(self):
+        text = self.parsed_input.get('1.0', tk.END)
+        self.parsed_output.delete('1.0', tk.END)
+        try:
+            result = {}
+            if ttp is not None:
+                parser = ttp(data=text, template="{{key}} {{value}}")
+                parser.parse()
+                result = parser.result(format="json")
+            else:
+                # Fallback: naive key:value lines
+                result = {k.strip(): v.strip() for k, v in (line.split(':', 1) for line in text.splitlines() if ':' in line)}
+            pretty = json.dumps(result, indent=2)
+            self.parsed_output.insert(tk.END, pretty)
+        except Exception as e:
+            self.parsed_output.insert(tk.END, json.dumps({"error": str(e)}, indent=2))
+
+    # --- Topology Tab ---
+    def _build_topology_tab(self, parent):
+        container = ctk.CTkFrame(parent)
+        container.pack(fill="both", expand=True, padx=8, pady=6)
+        toolbar = ctk.CTkFrame(container)
+        toolbar.pack(fill="x", padx=8, pady=(6,4))
+        ctk.CTkLabel(toolbar, text="Topology", font=("Helvetica", 12, "bold")).pack(side=tk.LEFT)
+        ctk.CTkButton(toolbar, text="Generate", command=self.generate_topology_layout).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(toolbar, text="Save", command=self.save_topology_layout).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(toolbar, text="Clear", command=self.clear_topology_layout).pack(side=tk.LEFT, padx=6)
+        # Dark canvas background for readability
+        self.topology_canvas = tk.Canvas(container, bg="#121212")
+        self.topology_canvas.pack(fill="both", expand=True, padx=8, pady=6)
+        # Interaction bindings
+        self.topology_canvas.bind('<ButtonPress-1>', self._topology_on_press)
+        self.topology_canvas.bind('<B1-Motion>', self._topology_on_drag)
+        self.topology_canvas.bind('<ButtonRelease-1>', self._topology_on_release)
+        self.topology_canvas.bind('<Double-Button-1>', self._topology_on_double_click)
+        # State
+        self.topo_nodes = {}
+        self.topo_edges = []
+        self._drag_state = {"node": None, "dx": 0, "dy": 0, "resizing": False}
+
+    def generate_topology_layout(self):
+        # Generate from selected site devices (fallback to placeholder)
+        nodes = []
+        edges = []
+        try:
+            site = next((s for s in self.sites if s.get('id') == self.selected_site_id), None)
+            if site:
+                for d in site.get('devices', []):
+                    nid = d.get('id') or d.get('label') or d.get('mgmt_ip') or f"node_{len(nodes)+1}"
+                    label = d.get('label') or d.get('mgmt_ip') or nid
+                    nodes.append({"id": nid, "label": label})
+                # Optional: parse edges from saved configs in profiles (LLDP/CDP) – placeholder, none by default
+            else:
+                nodes = [
+                    {"id": "A", "label": self.host_entry.get() or "DeviceA"},
+                    {"id": "B", "label": "DeviceB"},
+                    {"id": "C", "label": "DeviceC"},
+                ]
+                edges = [("A", "B"), ("B", "C")]
+        except Exception:
+            pass
+        self._layout_nodes_with_graphviz(nodes, edges)
+
+    def _layout_nodes_with_graphviz(self, nodes, edges):
+        try:
+            if graphviz_lib is None:
+                raise RuntimeError("Graphviz not available")
+            dot = "digraph G { graph [bgcolor=white]; node [shape=box, style=rounded, color=gray, fontname=Helvetica, fontcolor=white, fillcolor=\"#2b2b2b:#3f3f3f\", gradientangle=270]; edge [color=\"#8a8a8a\", arrowsize=0.7]; }"
+            for n in nodes:
+                dot += f"\n{n['id']} [label=\"{n['label']}\"]" 
+            for t, h in edges:
+                dot += f"\n{t} -> {h}"
+            img, path = self.render_graphviz_image(dot)
+            # If image rendered, just place default positions; a real layout reader would parse positions.
+        except Exception:
+            pass
+        # Create interactive nodes with default positions
+        self.clear_topology_layout()
+        w = self.topology_canvas.winfo_width() or 900
+        h = self.topology_canvas.winfo_height() or 600
+        positions = [(w*0.2, h*0.4), (w*0.5, h*0.6), (w*0.8, h*0.4)]
+        for i, n in enumerate(nodes):
+            x, y = positions[i % len(positions)]
+            self._add_topo_node(n['id'], n['label'], x, y, 150, 60)
+        for t, h2 in edges:
+            self._add_topo_edge(t, h2)
+        self._redraw_edges()
+
+    def _add_topo_node(self, node_id, label, x, y, w=140, h=60):
+        # Rounded rectangle approximation via create_rectangle
+        rect = self.topology_canvas.create_rectangle(x, y, x+w, y+h, fill="#2b2b2b", outline="#3f3f3f", width=2)
+        text = self.topology_canvas.create_text(x+w/2, y+h/2, text=label, fill="#e6e6e6", font=("Helvetica", 11))
+        handle = self.topology_canvas.create_rectangle(x+w-10, y+h-10, x+w, y+h, fill="#4fa3ff", outline="", width=0)
+        self.topo_nodes[node_id] = {"rect": rect, "text": text, "handle": handle, "x": x, "y": y, "w": w, "h": h, "label": label}
+
+    def _add_topo_edge(self, tail, head):
+        self.topo_edges.append((tail, head))
+
+    def _redraw_edges(self):
+        # Remove old edges
+        for item in getattr(self, '_edge_items', []):
+            self.topology_canvas.delete(item)
+        self._edge_items = []
+        for t, h in self.topo_edges:
+            tn = self.topo_nodes.get(t)
+            hn = self.topo_nodes.get(h)
+            if tn and hn:
+                x1 = tn['x'] + tn['w']/2
+                y1 = tn['y'] + tn['h']/2
+                x2 = hn['x'] + hn['w']/2
+                y2 = hn['y'] + hn['h']/2
+                line = self.topology_canvas.create_line(x1, y1, x2, y2, fill="#8a8a8a", width=1.5, arrow=tk.LAST)
+                self._edge_items.append(line)
+
+    def _hit_node(self, event):
+        # Return node_id if click is on rect or text; set resizing if on handle
+        for nid, n in self.topo_nodes.items():
+            hx1, hy1, hx2, hy2 = self.topology_canvas.coords(n['handle'])
+            if hx1 <= event.x <= hx2 and hy1 <= event.y <= hy2:
+                self._drag_state['resizing'] = True
+                return nid
+            x1, y1, x2, y2 = self.topology_canvas.coords(n['rect'])
+            if x1 <= event.x <= x2 and y1 <= event.y <= y2:
+                self._drag_state['resizing'] = False
+                return nid
+        return None
+
+    def _topology_on_press(self, event):
+        nid = self._hit_node(event)
+        if nid:
+            n = self.topo_nodes[nid]
+            self._drag_state['node'] = nid
+            self._drag_state['dx'] = event.x - n['x']
+            self._drag_state['dy'] = event.y - n['y']
+
+    def _topology_on_drag(self, event):
+        nid = self._drag_state.get('node')
+        if not nid:
+            return
+        n = self.topo_nodes[nid]
+        if self._drag_state.get('resizing'):
+            w = max(80, event.x - n['x'])
+            h = max(40, event.y - n['y'])
+            n['w'], n['h'] = w, h
+        else:
+            x = event.x - self._drag_state['dx']
+            y = event.y - self._drag_state['dy']
+            n['x'], n['y'] = x, y
+        # Update canvas items
+        x, y, w, h = n['x'], n['y'], n['w'], n['h']
+        self.topology_canvas.coords(n['rect'], x, y, x+w, y+h)
+        self.topology_canvas.coords(n['text'], x+w/2, y+h/2)
+        self.topology_canvas.coords(n['handle'], x+w-10, y+h-10, x+w, y+h)
+        self._redraw_edges()
+
+    def _topology_on_release(self, event):
+        self._drag_state['node'] = None
+        self._drag_state['resizing'] = False
+
+    def _topology_on_double_click(self, event):
+        nid = self._hit_node(event)
+        if not nid:
+            return
+        n = self.topo_nodes[nid]
+        new_label = simpledialog.askstring("Relabel Node", "Enter new label:", initialvalue=n['label'])
+        if new_label:
+            n['label'] = new_label
+            self.topology_canvas.itemconfigure(n['text'], text=new_label)
+
+    def clear_topology_layout(self):
+        self.topology_canvas.delete("all")
+        self.topo_nodes = {}
+        self.topo_edges = []
+        self._edge_items = []
+
+    def save_topology_layout(self):
+        layout = {
+            "canvas": {
+                "w": self.topology_canvas.winfo_width(),
+                "h": self.topology_canvas.winfo_height(),
+            },
+            "nodes": [
+                {"id": nid, "label": n['label'], "x": n['x'], "y": n['y'], "w": n['w'], "h": n['h']}
+                for nid, n in self.topo_nodes.items()
+            ],
+            "edges": [
+                {"tail": t, "head": h} for t, h in self.topo_edges
+            ],
+        }
+        # Save to the requested absolute path
+        out_path = r"d:\GitHub\CLIAI\topology_layout.json"
+        try:
+            with open(out_path, 'w') as f:
+                json.dump(layout, f, indent=2)
+            self.update_status(f"Saved topology layout to {out_path}")
+        except Exception as e:
+            messagebox.showerror("Save Error", str(e))
+
+    # --- Sites & Devices ---
+    def load_sites(self):
+        try:
+            if not os.path.exists(self.sites_file):
+                self.sites = []
+                with open(self.sites_file, 'w') as f:
+                    json.dump(self.sites, f, indent=2)
+                return
+            with open(self.sites_file, 'r') as f:
+                self.sites = json.load(f) or []
+        except Exception:
+            self.sites = []
+
+    def save_sites(self):
+        try:
+            with open(self.sites_file, 'w') as f:
+                json.dump(self.sites, f, indent=2)
+            self.update_status("Sites saved")
+        except Exception as e:
+            messagebox.showerror("Save Error", str(e))
+
+    def _build_sites_tab(self, parent):
+        container = ctk.CTkFrame(parent)
+        container.pack(fill="both", expand=True, padx=8, pady=6)
+        toolbar = ctk.CTkFrame(container)
+        toolbar.pack(fill="x", padx=8, pady=(6,4))
+        ctk.CTkLabel(toolbar, text="Sites & Devices", font=("Helvetica", 12, "bold")).pack(side=tk.LEFT)
+        ctk.CTkButton(toolbar, text="Add Site", command=self._add_site).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(toolbar, text="Add Device", command=self._add_device).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(toolbar, text="Delete", command=self._delete_site_or_device).pack(side=tk.LEFT, padx=6)
+        ctk.CTkButton(toolbar, text="Save", command=self.save_sites).pack(side=tk.LEFT, padx=6)
+        # Tree: sites as roots, devices as children
+        self.sites_tree = ttk.Treeview(container, columns=("label","mgmt_ip","platform"), show='tree headings', style="DarkTreeview")
+        self.sites_tree.heading('#0', text='ID')
+        self.sites_tree.heading('label', text='Label')
+        self.sites_tree.heading('mgmt_ip', text='Mgmt IP')
+        self.sites_tree.heading('platform', text='Platform')
+        self.sites_tree.pack(fill="both", expand=True, padx=8, pady=6)
+        self._populate_sites_tree()
+        self.sites_tree.bind('<<TreeviewSelect>>', self._on_sites_tree_select)
+
+    def _build_settings_tab(self, parent):
+        container = ctk.CTkFrame(parent)
+        container.pack(fill="both", expand=True, padx=8, pady=6)
+        # AI Configuration
+        ai_config_frame = ctk.CTkFrame(container)
+        ai_config_frame.pack(fill="x", padx=8, pady=(6,4))
+        ctk.CTkLabel(ai_config_frame, text="AI Configuration", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=2, padx=5, pady=(4,2), sticky="w")
+        ctk.CTkLabel(ai_config_frame, text="Provider:").grid(row=1, column=0, padx=5, pady=3, sticky="w")
+        self.ai_provider_combo = ctk.CTkComboBox(ai_config_frame, values=["None", "Gemini", "OpenAI", "Mistral", "Claude", "Ollama", "Simulation"])
+        self.ai_provider_combo.grid(row=1, column=1, padx=5, pady=3, sticky="ew")
+        self.ai_provider_combo.set("Gemini")
+        try:
+            self.ai_provider_combo.configure(command=self.on_ai_provider_change)
+        except Exception:
+            pass
+        ctk.CTkLabel(ai_config_frame, text="API Key:").grid(row=2, column=0, padx=5, pady=3, sticky="w")
+        self.api_key_entry = ctk.CTkEntry(ai_config_frame, show="*")
+        self.api_key_entry.grid(row=2, column=1, padx=5, pady=3, sticky="ew")
+        ctk.CTkLabel(ai_config_frame, text="Ollama Model:").grid(row=3, column=0, padx=5, pady=3, sticky="w")
+        self.ollama_model_combo = ctk.CTkComboBox(ai_config_frame, state="disabled")
+        self.ollama_model_combo.grid(row=3, column=1, padx=5, pady=3, sticky="ew")
+        ctk.CTkLabel(ai_config_frame, text="Gemini Model:").grid(row=4, column=0, padx=5, pady=3, sticky="w")
+        self.gemini_model_combo = ctk.CTkComboBox(ai_config_frame, values=["1.5-flash", "2.0-flash", "1.5-pro"])
+        self.gemini_model_combo.grid(row=4, column=1, padx=5, pady=3, sticky="ew")
+        self.gemini_model_combo.set("2.0-flash")
+        self.set_ai_btn = ctk.CTkButton(ai_config_frame, text="Set AI Provider", command=self.set_ai_provider)
+        self.set_ai_btn.grid(row=5, column=0, padx=5, pady=3, sticky="ew")
+        self.check_api_btn = ctk.CTkButton(ai_config_frame, text="Check API Key", command=self.check_api_key)
+        self.check_api_btn.grid(row=5, column=1, padx=5, pady=3, sticky="ew")
+        ai_config_frame.columnconfigure(1, weight=1)
+
+        # Terminal Options
+        terminal_opts_frame = ctk.CTkFrame(container)
+        terminal_opts_frame.pack(fill="x", padx=8, pady=(4,6))
+        ctk.CTkLabel(terminal_opts_frame, text="Terminal Options", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=5, pady=(4,2))
+        ctk.CTkLabel(terminal_opts_frame, text="Font Size:").grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        try:
+            ctk.CTkButton(terminal_opts_frame, text="-", width=36, command=self._decrease_terminal_font).grid(row=1, column=1, padx=2, pady=2)
+            ctk.CTkButton(terminal_opts_frame, text="+", width=36, command=self._increase_terminal_font).grid(row=1, column=2, padx=2, pady=2)
+        except Exception:
+            pass
+        ctk.CTkCheckBox(terminal_opts_frame, text="Auto-pager", variable=self.auto_pager_var).grid(row=2, column=0, sticky="w", padx=5, pady=2)
+        ctk.CTkLabel(terminal_opts_frame, text="Wrap Mode:").grid(row=3, column=0, sticky="w", padx=5, pady=2)
+        self.term_wrap_combo = ctk.CTkComboBox(terminal_opts_frame, values=["Wrap (word)", "No wrap"], width=140)
+        self.term_wrap_combo.set("Wrap (word)")
+        try:
+            self.term_wrap_combo.configure(command=self.on_term_wrap_change)
+        except Exception:
+            pass
+        self.term_wrap_combo.grid(row=3, column=1, sticky="w", padx=5, pady=2)
+        try:
+            self.terminal.configure(wrap='word')
+        except Exception:
+            pass
+
+    # Terminal font size controls
+    def _increase_terminal_font(self):
+        try:
+            self.terminal_font_size = max(9, int(getattr(self, 'terminal_font_size', 12))) + 1
+            try:
+                self.terminal.configure(font=("Consolas", self.terminal_font_size))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _decrease_terminal_font(self):
+        try:
+            self.terminal_font_size = max(9, int(getattr(self, 'terminal_font_size', 12)) - 1)
+            try:
+                self.terminal.configure(font=("Consolas", self.terminal_font_size))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _populate_sites_tree(self):
+        try:
+            for item in self.sites_tree.get_children():
+                self.sites_tree.delete(item)
+        except Exception:
+            pass
+        for s in self.sites:
+            sid = s.get('id') or f"site_{id(s)}"
+            lbl = s.get('name') or sid
+            parent_id = self.sites_tree.insert('', 'end', iid=sid, text=sid, values=(lbl, '', ''))
+            for d in s.get('devices', []):
+                did = d.get('id') or f"dev_{id(d)}"
+                self.sites_tree.insert(parent_id, 'end', iid=f"{sid}:{did}", text=did, values=(d.get('label',''), d.get('mgmt_ip',''), d.get('platform','')))
+
+    def _on_sites_tree_select(self, event=None):
+        sel = self.sites_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if ':' in iid:
+            # device
+            sid, did = iid.split(':', 1)
+            self.selected_site_id = sid
+            site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == sid), None)
+            if not site:
+                return
+            dev = next((d for d in site.get('devices', []) if (d.get('id') or f"dev_{id(d)}") == did), None)
+            if not dev:
+                return
+            # Populate connection fields
+            try:
+                self.host_entry.delete(0, tk.END)
+                self.host_entry.insert(0, dev.get('mgmt_ip',''))
+                plat = (dev.get('platform','') or '').strip().capitalize()
+                if plat:
+                    try:
+                        self.man_combo.set(plat)
+                        self._on_manufacturer_combo_changed(plat)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        else:
+            # site
+            self.selected_site_id = iid
+
+    def _add_site(self):
+        sid = simpledialog.askstring("Add Site", "Enter site ID:")
+        name = simpledialog.askstring("Add Site", "Enter site name:")
+        if not sid:
+            return
+        self.sites.append({"id": sid, "name": name or sid, "devices": []})
+        self._populate_sites_tree()
+
+    def _add_device(self):
+        if not self.selected_site_id:
+            messagebox.showinfo("Select Site", "Select a site first.")
+            return
+        did = simpledialog.askstring("Add Device", "Enter device ID:")
+        label = simpledialog.askstring("Add Device", "Enter label:")
+        mgmt = simpledialog.askstring("Add Device", "Enter mgmt IP:")
+        platform = simpledialog.askstring("Add Device", "Enter platform (Cisco/H3C/Huawei/Juniper/Arista):")
+        site = next((s for s in self.sites if s.get('id') == self.selected_site_id), None)
+        if not site:
+            # try iid mapping
+            site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == self.selected_site_id), None)
+        if not site:
+            return
+        site.setdefault('devices', []).append({"id": did or f"dev_{len(site.get('devices', []))+1}", "label": label or did or mgmt, "mgmt_ip": mgmt or '', "platform": platform or '' , "site_id": site.get('id')})
+        self._populate_sites_tree()
+
+    def _delete_site_or_device(self):
+        sel = self.sites_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        if ':' in iid:
+            sid, did = iid.split(':', 1)
+            site = next((s for s in self.sites if (s.get('id') or f"site_{id(s)}") == sid), None)
+            if site:
+                site['devices'] = [d for d in site.get('devices', []) if (d.get('id') or f"dev_{id(d)}") != did]
+        else:
+            self.sites = [s for s in self.sites if (s.get('id') or f"site_{id(s)}") != iid]
+        self._populate_sites_tree()
 
     def _init_db(self):
         """Initialize the SQLite database to cache AI-generated commands."""
